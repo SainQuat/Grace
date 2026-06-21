@@ -1,0 +1,38 @@
+{
+  "name": "grace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first desktop AI chat client.",
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "postinstall": "node node_modules/electron/install.js",
+    "ensure:electron": "node node_modules/electron/install.js",
+    "dev": "npm run ensure:electron && electron-vite dev",
+    "build": "tsc --noEmit && electron-vite build",
+    "preview": "npm run ensure:electron && electron-vite preview",
+    "smoke:provider": "node scripts/smoke-provider.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "remark-gfm": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^42.4.1",
+    "electron-vite": "^5.0.0",
+    "typescript": "^5.5.3",
+    "vite": "^7.3.5",
+    "vitest": "^4.1.9"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
+  }
+}
