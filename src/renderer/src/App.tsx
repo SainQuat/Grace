@@ -38,7 +38,7 @@ import { providerPresets } from '../../shared/providerPresets'
 import type { ChatMessagePayload, ChatStreamEvent, CustomProviderSummary, ProviderModel, SkillSummary } from '../../shared/types'
 import { locales, translate, type Locale, type Translate } from './i18n'
 import { createSetupAgentPlan } from './setupAgent'
-import { createDraftTitle, filterModelsByQuery, formatBytes, groupModelsByProvider, uid } from './utils'
+import { createDraftTitle, createNotificationBody, filterModelsByQuery, formatBytes, groupModelsByProvider, uid } from './utils'
 
 type Role = 'user' | 'assistant'
 type ThemeMode = 'light' | 'dark'
@@ -323,6 +323,10 @@ export function App(): JSX.Element {
   const [effort, setEffort] = usePersistentState<'low' | 'medium' | 'high'>('grace.effort', 'medium')
   const [themeMode, setThemeMode] = usePersistentState<ThemeMode>('grace.themeMode', 'dark')
   const [locale, setLocale] = usePersistentState<Locale>('grace.locale', 'ru')
+  const [responseNotificationsEnabled, setResponseNotificationsEnabled] = usePersistentState(
+    'grace.responseNotificationsEnabled',
+    true
+  )
   const [projects, setProjects] = usePersistentState<Project[]>('grace.projects', initialProjects)
   const [activeProjectId, setActiveProjectId] = usePersistentState<string | null>(
     'grace.activeProjectId',
@@ -357,6 +361,11 @@ export function App(): JSX.Element {
   const [installedSkills, setInstalledSkills] = usePersistentState<SkillSummary[]>('grace.installedSkills', [])
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null)
   const requestChatRef = useRef<Record<string, string>>({})
+  const responseContentRef = useRef<Record<string, string>>({})
+  const stoppedRequestRef = useRef<Set<string>>(new Set())
+  const chatsRef = useRef(chats)
+  const activeChatIdRef = useRef(activeChatId)
+  const responseNotificationsEnabledRef = useRef(responseNotificationsEnabled)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
@@ -388,6 +397,18 @@ export function App(): JSX.Element {
   useLayoutEffect(() => {
     document.documentElement.dataset.platform = navigator.platform.toLowerCase().includes('mac') ? 'darwin' : 'other'
   }, [])
+
+  useEffect(() => {
+    chatsRef.current = chats
+  }, [chats])
+
+  useEffect(() => {
+    activeChatIdRef.current = activeChatId
+  }, [activeChatId])
+
+  useEffect(() => {
+    responseNotificationsEnabledRef.current = responseNotificationsEnabled
+  }, [responseNotificationsEnabled])
 
   useEffect(() => {
     window.graceAI
@@ -437,7 +458,7 @@ export function App(): JSX.Element {
   useEffect(() => {
     const unsubscribe = window.graceAI.onChatEvent((event) => handleStreamEvent(event))
     return unsubscribe
-  }, [activeRequestId])
+  }, [])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -456,9 +477,10 @@ export function App(): JSX.Element {
   }, [])
 
   function handleStreamEvent(event: ChatStreamEvent): void {
-    const targetChatId = requestChatRef.current[event.requestId] ?? activeChatId
+    const targetChatId = requestChatRef.current[event.requestId] ?? activeChatIdRef.current
 
     if (event.type === 'delta') {
+      responseContentRef.current[event.requestId] = `${responseContentRef.current[event.requestId] ?? ''}${event.text}`
       setChats((currentChats) =>
         currentChats.map((chat) =>
           chat.id === targetChatId
@@ -477,6 +499,7 @@ export function App(): JSX.Element {
     }
 
     if (event.type === 'done') {
+      notifyResponseComplete(event.requestId, targetChatId)
       setChats((currentChats) =>
         currentChats.map((chat) =>
           chat.id === targetChatId
@@ -491,6 +514,8 @@ export function App(): JSX.Element {
       )
       setActiveRequestId((current) => (current === event.requestId ? null : current))
       delete requestChatRef.current[event.requestId]
+      delete responseContentRef.current[event.requestId]
+      stoppedRequestRef.current.delete(event.requestId)
       return
     }
 
@@ -510,6 +535,29 @@ export function App(): JSX.Element {
     )
     setActiveRequestId(null)
     delete requestChatRef.current[event.requestId]
+    delete responseContentRef.current[event.requestId]
+    stoppedRequestRef.current.delete(event.requestId)
+  }
+
+  function notifyResponseComplete(requestId: string, chatId: string): void {
+    if (!responseNotificationsEnabledRef.current || stoppedRequestRef.current.has(requestId)) {
+      return
+    }
+
+    const body = createNotificationBody(responseContentRef.current[requestId] ?? '')
+    if (!body) {
+      return
+    }
+
+    const chat = chatsRef.current.find((candidate) => candidate.id === chatId)
+    void window.graceAI
+      .showResponseNotification({
+        title: chat?.title || 'Grace',
+        body
+      })
+      .catch((error) => {
+        console.warn('Could not show response notification', error)
+      })
   }
 
   function createNewChat(): void {
@@ -682,6 +730,8 @@ export function App(): JSX.Element {
 
     const requestId = uid('assistant')
     requestChatRef.current[requestId] = activeChat.id
+    responseContentRef.current[requestId] = ''
+    stoppedRequestRef.current.delete(requestId)
     const userMessage: Message = {
       id: uid('user'),
       role: 'user',
@@ -736,6 +786,7 @@ export function App(): JSX.Element {
 
   function stopStreaming(): void {
     if (!activeRequestId) return
+    stoppedRequestRef.current.add(activeRequestId)
     window.graceAI.stopChat(activeRequestId)
     setActiveRequestId(null)
   }
@@ -1010,11 +1061,13 @@ export function App(): JSX.Element {
           providers={providers}
           themeMode={themeMode}
           locale={locale}
+          responseNotificationsEnabled={responseNotificationsEnabled}
           mcpServers={mcpServers}
           translate={t}
           onClose={() => setProviderSettingsOpen(false)}
           onThemeChange={setThemeMode}
           onLocaleChange={setLocale}
+          onResponseNotificationsChange={setResponseNotificationsEnabled}
           onUpsertMcpServer={upsertMcpServer}
           onUpdateMcpServer={updateMcpServer}
           onDeleteMcpServer={deleteMcpServer}
@@ -1789,11 +1842,13 @@ function ProviderSettingsModal(props: {
   providers: CustomProviderSummary[]
   themeMode: ThemeMode
   locale: Locale
+  responseNotificationsEnabled: boolean
   mcpServers: McpServer[]
   translate: Translate
   onClose: () => void
   onThemeChange: (themeMode: ThemeMode) => void
   onLocaleChange: (locale: Locale) => void
+  onResponseNotificationsChange: (enabled: boolean) => void
   onUpsertMcpServer: (server: Omit<McpServer, 'id' | 'createdAt'> & { id?: string; createdAt?: string }) => void
   onUpdateMcpServer: (serverId: string, patch: Partial<McpServer>) => void
   onDeleteMcpServer: (serverId: string) => void
@@ -1937,6 +1992,21 @@ function ProviderSettingsModal(props: {
               ))}
             </div>
           </div>
+        </section>
+
+        <section className="settings-section" aria-labelledby="notification-settings-title">
+          <div>
+            <strong id="notification-settings-title">{props.translate('notifications')}</strong>
+            <p>{props.translate('notificationsHelp')}</p>
+          </div>
+          <button
+            className={`mini-toggle ${props.responseNotificationsEnabled ? 'active' : ''}`}
+            type="button"
+            aria-pressed={props.responseNotificationsEnabled}
+            onClick={() => props.onResponseNotificationsChange(!props.responseNotificationsEnabled)}
+          >
+            {props.responseNotificationsEnabled ? props.translate('enabled') : props.translate('disabled')}
+          </button>
         </section>
 
         <div className="settings-subheader">

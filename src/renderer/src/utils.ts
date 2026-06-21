@@ -10,6 +10,21 @@ export function createDraftTitle(input: string): string {
   return normalized.length > 42 ? `${normalized.slice(0, 39)}...` : normalized
 }
 
+export function createNotificationBody(input: string, maxLength = 160): string {
+  const normalized = input.replace(/\s+/g, ' ').trim()
+
+  if (!normalized || maxLength <= 0) {
+    return ''
+  }
+
+  if (normalized.length <= maxLength) {
+    return normalized
+  }
+
+  const sliceLength = Math.max(0, maxLength - 3)
+  return `${normalized.slice(0, sliceLength).trimEnd()}...`
+}
+
 export interface ProviderGroupedItem {
   id: string
   provider: string
