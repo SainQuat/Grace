@@ -14,11 +14,34 @@
   --accent: #0f766e;
   --accent-soft: #e8f3f1;
   --error: #dc2626;
+  --error-bg: #fef2f2;
+  --error-border: #fecaca;
   --shadow: 0 18px 50px rgba(20, 20, 20, 0.12);
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 15px;
   letter-spacing: 0;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #11100f;
+  --sidebar: #181715;
+  --surface: #1f1e1b;
+  --surface-muted: #2a2925;
+  --border: #35332e;
+  --border-strong: #47443d;
+  --text: #f5f2ea;
+  --muted: #aaa49a;
+  --disabled: #6f6a63;
+  --primary: #f5f2ea;
+  --primary-text: #171614;
+  --accent: #5cc8b7;
+  --accent-soft: rgba(92, 200, 183, 0.14);
+  --error: #f87171;
+  --error-bg: rgba(127, 29, 29, 0.32);
+  --error-border: rgba(248, 113, 113, 0.34);
+  --shadow: 0 22px 70px rgba(0, 0, 0, 0.48);
 }
 
 * {
@@ -30,6 +53,7 @@ body {
   color: var(--text);
   background: var(--bg);
   overflow: hidden;
+  transition: color 140ms ease-out, background 140ms ease-out;
 }
 
 button,
@@ -560,6 +584,19 @@ input:focus-visible {
   box-shadow: var(--shadow);
 }
 
+.model-menu {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  max-height: min(650px, calc(100vh - 190px));
+  overflow: hidden;
+}
+
+.model-list-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
 .tool-menu {
   left: 12px;
   right: auto;
@@ -596,6 +633,43 @@ input:focus-visible {
 
 .model-row {
   grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.model-row > span {
+  min-width: 0;
+}
+
+.model-row strong,
+.model-row small,
+.model-row em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-group + .model-group {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.model-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px 5px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.model-group-heading span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .model-row em {
@@ -678,9 +752,58 @@ input:focus-visible {
 }
 
 .settings-header p,
+.settings-section p,
+.settings-subheader p,
 .settings-model-list p {
   margin: 0;
   color: var(--muted);
+}
+
+.settings-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 12px;
+  background: var(--surface-muted);
+  border-radius: 10px;
+}
+
+.settings-section strong {
+  display: block;
+  margin-bottom: 3px;
+}
+
+.settings-subheader {
+  display: grid;
+  gap: 3px;
+}
+
+.theme-segmented {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(82px, 1fr));
+  gap: 4px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.theme-segmented button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: transparent;
+  border-radius: 6px;
+}
+
+.theme-segmented button.active {
+  color: var(--text);
+  background: var(--surface-muted);
 }
 
 .settings-form {
@@ -711,8 +834,8 @@ input:focus-visible {
 .settings-error {
   padding: 10px 12px;
   color: var(--error);
-  background: #fef2f2;
-  border: 1px solid #fecaca;
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
   border-radius: 8px;
 }
 
@@ -988,5 +1111,18 @@ input:focus-visible {
     width: auto;
     max-height: min(68vh, 560px);
     overflow: auto;
+  }
+
+  .model-menu {
+    max-height: min(76vh, 620px);
+    overflow: hidden;
+  }
+
+  .settings-section {
+    grid-template-columns: 1fr;
+  }
+
+  .theme-segmented {
+    width: 100%;
   }
 }
