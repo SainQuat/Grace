@@ -48,6 +48,10 @@
   box-sizing: border-box;
 }
 
+html {
+  background: var(--bg);
+}
+
 body {
   margin: 0;
   color: var(--text);
@@ -482,7 +486,7 @@ input:focus-visible {
 
 .composer-zone {
   padding: 12px 24px 18px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0), #ffffff 24%);
+  background: linear-gradient(180deg, transparent, var(--bg) 24%);
 }
 
 .composer-shell {
@@ -504,9 +508,13 @@ input:focus-visible {
   padding: 8px 4px;
   resize: vertical;
   color: var(--text);
-  background: transparent;
+  background: var(--surface);
   border: 0;
   outline: 0;
+}
+
+.composer-shell textarea::placeholder {
+  color: var(--muted);
 }
 
 .composer-chips {
@@ -586,15 +594,49 @@ input:focus-visible {
 
 .model-menu {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
   max-height: min(650px, calc(100vh - 190px));
   overflow: hidden;
+}
+
+.model-search {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin: 2px 4px 8px;
+  padding: 0 10px;
+  min-height: 38px;
+  color: var(--muted);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.model-search input {
+  width: 100%;
+  min-width: 0;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  outline: 0;
+}
+
+.model-search input::placeholder {
+  color: var(--muted);
 }
 
 .model-list-scroll {
   min-height: 0;
   overflow-y: auto;
   padding-right: 2px;
+}
+
+.model-empty-state {
+  margin: 0;
+  padding: 18px 10px 20px;
+  color: var(--muted);
+  text-align: center;
 }
 
 .tool-menu {

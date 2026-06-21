@@ -17,6 +17,12 @@ export interface ProviderGroupedItem {
   hint?: string
 }
 
+export interface ModelSearchItem extends ProviderGroupedItem {
+  modelId?: string
+  label?: string
+  description?: string
+}
+
 export interface ProviderModelGroup<T extends ProviderGroupedItem> {
   id: string
   label: string
@@ -46,6 +52,29 @@ export function groupModelsByProvider<T extends ProviderGroupedItem>(models: T[]
   }
 
   return groups
+}
+
+export function filterModelsByQuery<T extends ModelSearchItem>(models: T[], query: string): T[] {
+  const normalizedQuery = query.trim().toLowerCase()
+
+  if (!normalizedQuery) {
+    return models
+  }
+
+  const tokens = normalizedQuery.split(/\s+/).filter(Boolean)
+
+  return models.filter((model) => {
+    const searchableText = [
+      model.id,
+      model.modelId,
+      model.label
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+
+    return tokens.every((token) => searchableText.includes(token))
+  })
 }
 
 export function uid(prefix: string): string {

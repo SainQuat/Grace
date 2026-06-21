@@ -33,7 +33,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ChatMessagePayload, ChatStreamEvent, CustomProviderSummary, ProviderModel } from '../../shared/types'
-import { createDraftTitle, formatBytes, groupModelsByProvider, uid } from './utils'
+import { createDraftTitle, filterModelsByQuery, formatBytes, groupModelsByProvider, uid } from './utils'
 
 type Role = 'user' | 'assistant'
 type ThemeMode = 'light' | 'dark'
@@ -988,30 +988,54 @@ function ModelMenu(props: {
   onEffortChange: (effort: 'low' | 'medium' | 'high') => void
   onOpenProviderSettings: () => void
 }): JSX.Element {
-  const modelGroups = groupModelsByProvider(props.models)
+  const [modelSearchQuery, setModelSearchQuery] = useState('')
+  const filteredModels = filterModelsByQuery(props.models, modelSearchQuery)
+  const modelGroups = groupModelsByProvider(filteredModels)
+  const firstFilteredModel = filteredModels[0]
 
   return (
     <div className="floating-menu model-menu" role="menu" aria-label="Model picker">
       <div className="menu-heading">Choose model</div>
+      <label className="model-search">
+        <Search size={15} />
+        <input
+          autoFocus
+          value={modelSearchQuery}
+          type="search"
+          placeholder="Search models"
+          aria-label="Search models"
+          onChange={(event) => setModelSearchQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && firstFilteredModel) {
+              event.preventDefault()
+              props.onSelectModel(firstFilteredModel)
+            }
+          }}
+        />
+      </label>
       <div className="model-list-scroll">
-        {modelGroups.map((group) => (
-          <section className="model-group" key={group.id} aria-label={group.label}>
-            <div className="model-group-heading">
-              <strong>{group.label}</strong>
-              {group.detail ? <span>{group.detail}</span> : null}
-            </div>
-            {group.models.map((model) => (
-              <button key={model.id} className="model-row" type="button" role="menuitemradio" aria-checked={props.selectedModel.id === model.id} onClick={() => props.onSelectModel(model)}>
-                <span>
-                  <strong>{model.label}</strong>
-                  <small>{model.description}</small>
-                  {model.providerKind === 'custom' ? null : <em>{model.hint}</em>}
-                </span>
-                {props.selectedModel.id === model.id ? <Check size={17} /> : null}
-              </button>
-            ))}
-          </section>
-        ))}
+        {modelGroups.length > 0 ? (
+          modelGroups.map((group) => (
+            <section className="model-group" key={group.id} aria-label={group.label}>
+              <div className="model-group-heading">
+                <strong>{group.label}</strong>
+                {group.detail ? <span>{group.detail}</span> : null}
+              </div>
+              {group.models.map((model) => (
+                <button key={model.id} className="model-row" type="button" role="menuitemradio" aria-checked={props.selectedModel.id === model.id} onClick={() => props.onSelectModel(model)}>
+                  <span>
+                    <strong>{model.label}</strong>
+                    <small>{model.description}</small>
+                    {model.providerKind === 'custom' ? null : <em>{model.hint}</em>}
+                  </span>
+                  {props.selectedModel.id === model.id ? <Check size={17} /> : null}
+                </button>
+              ))}
+            </section>
+          ))
+        ) : (
+          <p className="model-empty-state">No models found.</p>
+        )}
       </div>
       {props.selectedModel.supportsEffort ? (
         <div className="effort-control" aria-label="Reasoning effort">
