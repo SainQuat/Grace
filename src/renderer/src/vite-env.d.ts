@@ -4,7 +4,9 @@ import type {
   ChatRequestPayload,
   ChatStreamEvent,
   CustomProviderSummary,
-  SaveCustomProviderPayload
+  SaveCustomProviderPayload,
+  SetupAgentRequestPayload,
+  SetupAgentResponse
 } from '../../shared/types'
 
 declare global {
@@ -17,6 +19,7 @@ declare global {
       getProviders(): Promise<CustomProviderSummary[]>
       saveCustomProvider(payload: SaveCustomProviderPayload): Promise<CustomProviderSummary>
       refreshCustomProviderModels(providerId?: string): Promise<CustomProviderSummary>
+      askSetupAgent(payload: SetupAgentRequestPayload): Promise<SetupAgentResponse>
     }
   }
 }

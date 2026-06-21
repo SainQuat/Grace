@@ -3,7 +3,9 @@ import type {
   ChatRequestPayload,
   ChatStreamEvent,
   CustomProviderSummary,
-  SaveCustomProviderPayload
+  SaveCustomProviderPayload,
+  SetupAgentRequestPayload,
+  SetupAgentResponse
 } from '../shared/types'
 
 contextBridge.exposeInMainWorld('graceAI', {
@@ -31,5 +33,8 @@ contextBridge.exposeInMainWorld('graceAI', {
   },
   refreshCustomProviderModels(providerId?: string): Promise<CustomProviderSummary> {
     return ipcRenderer.invoke('provider:refresh-custom-models', providerId)
+  },
+  askSetupAgent(payload: SetupAgentRequestPayload): Promise<SetupAgentResponse> {
+    return ipcRenderer.invoke('setup-agent:ask', payload)
   }
 })

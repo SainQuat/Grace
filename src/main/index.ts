@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'node:path'
-import type { ChatRequestPayload, SaveCustomProviderPayload } from '../shared/types'
+import type { ChatRequestPayload, SaveCustomProviderPayload, SetupAgentRequestPayload } from '../shared/types'
 import { getProviderPreset } from '../shared/providerPresets'
 import { fetchProviderModels, normalizeBaseUrl, streamProviderChat } from './providerClient'
 import {
@@ -22,7 +22,7 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 680,
     title: 'Grace',
-    backgroundColor: '#ffffff',
+    backgroundColor: '#11100f',
     show: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
@@ -127,6 +127,57 @@ app.whenReady().then(() => {
 
     const models = await fetchProviderModels(secret.baseUrl, secret.apiKey, secret.apiFormat)
     return updateCustomProviderModels(providerId, models)
+  })
+
+  ipcMain.handle('setup-agent:ask', async (_event, payload: SetupAgentRequestPayload) => {
+    const providerId = payload.providerId ?? 'custom'
+    const secret = await getCustomProviderSecret(providerId)
+    const modelId = payload.modelId || 'dugin400'
+
+    if (!secret) {
+      return {
+        configured: false,
+        modelId,
+        content: 'Setup agent provider is not configured yet.'
+      }
+    }
+
+    const requestPayload: ChatRequestPayload = {
+      requestId: `setup-agent-${Date.now()}`,
+      providerKind: 'custom',
+      providerId,
+      modelId,
+      effort: 'medium',
+      tools: [],
+      files: [],
+      messages: [
+        {
+          role: 'user',
+          content:
+            'You are Grace setup agent. Answer briefly in Russian. Help configure providers, models, skills, and MCP servers. Never print API keys back.'
+        },
+        ...payload.messages
+      ]
+    }
+
+    const abortController = new AbortController()
+    let content = ''
+
+    for await (const chunk of streamProviderChat(
+      secret.baseUrl,
+      secret.apiKey,
+      requestPayload,
+      abortController.signal,
+      secret.apiFormat
+    )) {
+      content += chunk
+    }
+
+    return {
+      configured: true,
+      modelId,
+      content: content || 'Готово.'
+    }
   })
 
   createWindow()

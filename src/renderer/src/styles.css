@@ -60,6 +60,11 @@ body {
   transition: color 140ms ease-out, background 140ms ease-out;
 }
 
+#root {
+  min-height: 100vh;
+  background: var(--bg);
+}
+
 button,
 textarea,
 input {
@@ -306,6 +311,12 @@ input:focus-visible {
   white-space: nowrap;
 }
 
+.sidebar-row small,
+.project-row-main small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .sidebar-row:hover,
 .sidebar-row.active,
 .icon-button:hover,
@@ -325,6 +336,36 @@ input:focus-visible {
 .row-more {
   color: var(--muted);
   opacity: 0;
+}
+
+.muted-row {
+  color: var(--muted);
+}
+
+.project-row-main {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.project-icon-dot {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+}
+
+.project-color-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+}
+
+.row-action-label {
+  padding: 7px 8px 3px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
 }
 
 .sidebar-row:hover .row-more,
@@ -675,6 +716,7 @@ input:focus-visible {
 .model-menu {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  height: min(650px, calc(100vh - 190px));
   max-height: min(650px, calc(100vh - 190px));
   overflow: hidden;
 }
@@ -959,6 +1001,17 @@ input:focus-visible {
   background: var(--surface-muted);
 }
 
+.settings-inline-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.language-segmented {
+  grid-template-columns: repeat(2, minmax(96px, 1fr));
+}
+
 .settings-form {
   display: grid;
   gap: 12px;
@@ -975,13 +1028,145 @@ input:focus-visible {
   font-size: 13px;
 }
 
-.settings-form input {
+.settings-form input,
+.settings-form select,
+.settings-form textarea {
   min-height: 42px;
   padding: 0 12px;
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: 8px;
+}
+
+.settings-form textarea {
+  min-height: 72px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+.mcp-list {
+  display: grid;
+  gap: 8px;
+}
+
+.mcp-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.mcp-card div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.mcp-card span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mini-toggle {
+  min-height: 30px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.mini-toggle.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.mcp-form {
+  padding: 12px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.setup-agent-modal {
+  width: min(100%, 720px);
+}
+
+.setup-agent-route {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 7px 10px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.setup-agent-thread {
+  display: grid;
+  gap: 10px;
+  max-height: min(420px, 48vh);
+  overflow: auto;
+  padding: 4px 2px;
+}
+
+.setup-agent-message {
+  width: fit-content;
+  max-width: 86%;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  background: var(--surface-muted);
+  border-radius: 12px;
+}
+
+.setup-agent-message.user {
+  justify-self: end;
+  color: var(--primary-text);
+  background: var(--primary);
+}
+
+.setup-agent-message.assistant {
+  justify-self: start;
+}
+
+.setup-agent-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  padding: 10px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.setup-agent-composer textarea {
+  width: 100%;
+  min-height: 68px;
+  padding: 8px 10px;
+  resize: vertical;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
 }
 
 .skills-modal {

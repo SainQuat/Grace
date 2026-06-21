@@ -36,6 +36,8 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { providerPresets } from '../../shared/providerPresets'
 import type { ChatMessagePayload, ChatStreamEvent, CustomProviderSummary, ProviderModel, SkillSummary } from '../../shared/types'
+import { locales, translate, type Locale, type Translate } from './i18n'
+import { createSetupAgentPlan } from './setupAgent'
 import { createDraftTitle, filterModelsByQuery, formatBytes, groupModelsByProvider, uid } from './utils'
 
 type Role = 'user' | 'assistant'
@@ -52,9 +54,36 @@ interface Chat {
   id: string
   title: string
   project?: string
+  projectId?: string
   pinned?: boolean
   messages: Message[]
   updatedAt: string
+}
+
+interface Project {
+  id: string
+  name: string
+  icon: ProjectIconId
+  color: string
+}
+
+type ProjectIconId = 'folder' | 'bot' | 'book' | 'file' | 'image' | 'zap' | 'settings' | 'archive'
+
+interface McpServer {
+  id: string
+  name: string
+  transport: 'http' | 'command'
+  url: string
+  command: string
+  envText: string
+  enabled: boolean
+  createdAt: string
+}
+
+interface SetupAgentMessage {
+  id: string
+  role: Role
+  content: string
 }
 
 interface AttachedFile {
@@ -88,6 +117,24 @@ interface SkillInstallDraft {
   status: 'idle' | 'installed' | 'error'
   message?: string
 }
+
+const projectIconOptions: Array<{ id: ProjectIconId; label: string; icon: typeof Folder }> = [
+  { id: 'folder', label: 'Folder', icon: Folder },
+  { id: 'bot', label: 'Bot', icon: Bot },
+  { id: 'book', label: 'Book', icon: BookOpen },
+  { id: 'file', label: 'File', icon: FileText },
+  { id: 'image', label: 'Image', icon: Image },
+  { id: 'zap', label: 'Zap', icon: Zap },
+  { id: 'settings', label: 'Settings', icon: Settings },
+  { id: 'archive', label: 'Archive', icon: Archive }
+]
+
+const projectColors = ['#5cc8b7', '#8b5cf6', '#f59e0b', '#ef4444', '#3b82f6', '#22c55e', '#f97316', '#ec4899']
+
+const initialProjects: Project[] = [
+  { id: 'project-grace', name: 'Grace', icon: 'bot', color: '#5cc8b7' },
+  { id: 'project-writing', name: 'Writing', icon: 'book', color: '#8b5cf6' }
+]
 
 const tools: ToolOption[] = [
   { id: 'attach', label: 'Attach file', description: 'Add docs, images, or notes', icon: Paperclip },
@@ -198,46 +245,69 @@ function toProviderModelOption(provider: CustomProviderSummary, model: ProviderM
 const initialChats: Chat[] = [
   {
     id: 'chat-product-plan',
-    title: 'Product plan for Grace v0.1',
+    title: 'План Grace v0.1',
     pinned: true,
     project: 'Grace',
+    projectId: 'project-grace',
     updatedAt: new Date().toISOString(),
     messages: [
       {
         id: 'm1',
         role: 'user',
-        content: 'Sketch the first version of a desktop AI chat app.'
+        content: 'Набросай первую версию десктопного AI-чата.'
       },
       {
         id: 'm2',
         role: 'assistant',
         content:
-          'Start with a local-first chat client: sidebar history, model picker, streaming responses, files as chips, and a canvas panel for long writing. Keep provider keys in the desktop runtime, not in renderer state.'
+          'Начни с local-first чат-клиента: история в сайдбаре, выбор модели, streaming-ответы, файлы как chips и canvas-панель для длинных документов. Ключи провайдеров держим в desktop runtime, не в renderer state.'
       }
     ]
   },
   {
     id: 'chat-release-notes',
-    title: 'Release notes template',
+    title: 'Шаблон релиз-нотов',
     updatedAt: new Date(Date.now() - 1000 * 60 * 34).toISOString(),
     messages: []
   },
   {
     id: 'chat-ui-copy',
-    title: 'Improve onboarding copy',
+    title: 'Улучшить onboarding copy',
     project: 'Writing',
+    projectId: 'project-writing',
     updatedAt: new Date(Date.now() - 1000 * 60 * 60 * 5).toISOString(),
     messages: []
   }
 ]
 
-const canvasInitialValue = `# Working draft
+const canvasInitialValue = `# Рабочий черновик
 
-Use this canvas for long answers, specs, code, and edited documents.
+Используйте canvas для длинных ответов, спецификаций, кода и редактируемых документов.
 
-- Select text in a future build to ask Grace about that selection.
-- Export or copy when the draft is ready.
-- Keep the chat open while refining the document.`
+- В будущей версии можно будет выделить текст и спросить Grace о фрагменте.
+- Экспортируйте или копируйте текст, когда черновик готов.
+- Держите чат открытым, пока дорабатываете документ.`
+
+function resolveChatProjectId(chat: Chat, projects: Project[]): string | undefined {
+  if (chat.projectId) return chat.projectId
+  if (!chat.project) return undefined
+  return projects.find((project) => project.name === chat.project)?.id
+}
+
+function getProjectIcon(iconId: ProjectIconId): typeof Folder {
+  return projectIconOptions.find((option) => option.id === iconId)?.icon ?? Folder
+}
+
+function getNextProjectIcon(iconId: ProjectIconId): ProjectIconId {
+  const currentIndex = projectIconOptions.findIndex((option) => option.id === iconId)
+  const nextOption = projectIconOptions[(currentIndex + 1) % projectIconOptions.length]
+  return nextOption.id
+}
+
+function getNextProjectColor(color: string): string {
+  const currentIndex = projectColors.indexOf(color)
+  return projectColors[(currentIndex + 1) % projectColors.length]
+}
 
 export function App(): JSX.Element {
   const [chats, setChats] = usePersistentState<Chat[]>('grace.chats', initialChats)
@@ -251,7 +321,25 @@ export function App(): JSX.Element {
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
   const [modelId, setModelId] = usePersistentState('grace.modelId', builtInModels[0].id)
   const [effort, setEffort] = usePersistentState<'low' | 'medium' | 'high'>('grace.effort', 'medium')
-  const [themeMode, setThemeMode] = usePersistentState<ThemeMode>('grace.themeMode', 'light')
+  const [themeMode, setThemeMode] = usePersistentState<ThemeMode>('grace.themeMode', 'dark')
+  const [locale, setLocale] = usePersistentState<Locale>('grace.locale', 'ru')
+  const [projects, setProjects] = usePersistentState<Project[]>('grace.projects', initialProjects)
+  const [activeProjectId, setActiveProjectId] = usePersistentState<string | null>(
+    'grace.activeProjectId',
+    initialProjects[0].id
+  )
+  const [mcpServers, setMcpServers] = usePersistentState<McpServer[]>('grace.mcpServers', [])
+  const [setupAgentOpen, setSetupAgentOpen] = useState(false)
+  const [setupAgentMessages, setSetupAgentMessages] = usePersistentState<SetupAgentMessage[]>(
+    'grace.setupAgentMessages',
+    [
+      {
+        id: 'setup-agent-welcome',
+        role: 'assistant',
+        content: 'Я могу помочь подключить MCP сервер, провайдера или выбрать модель. Для ответов использую Zed/custom provider и модель dugin400, если провайдер уже настроен.'
+      }
+    ]
+  )
   const [toolMenuOpen, setToolMenuOpen] = useState(false)
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const [providerSettingsOpen, setProviderSettingsOpen] = useState(false)
@@ -277,7 +365,16 @@ export function App(): JSX.Element {
     [providers]
   )
   const visibleSkills = useMemo(() => [...presetSkills, ...installedSkills], [installedSkills])
+  const t: Translate = useMemo(() => (key) => translate(locale, key), [locale])
   const activeChat = chats.find((chat) => chat.id === activeChatId) ?? chats[0]
+  const activeProject = projects.find((project) => project.id === activeProjectId) ?? null
+  const visibleChats = useMemo(
+    () =>
+      activeProjectId
+        ? chats.filter((chat) => resolveChatProjectId(chat, projects) === activeProjectId)
+        : chats,
+    [activeProjectId, chats, projects]
+  )
   const selectedModel = availableModels.find((model) => model.id === modelId) ?? availableModels[0]
   const selectedTools = tools.filter((tool) => selectedToolIds.includes(tool.id))
   const canSend = composerValue.trim().length > 0 || attachedFiles.length > 0
@@ -313,6 +410,27 @@ export function App(): JSX.Element {
   }, [availableModels, modelId, setModelId])
 
   useEffect(() => {
+    if (activeProjectId && !projects.some((project) => project.id === activeProjectId)) {
+      setActiveProjectId(null)
+    }
+  }, [activeProjectId, projects, setActiveProjectId])
+
+  useEffect(() => {
+    setChats((currentChats) => {
+      let changed = false
+      const migratedChats = currentChats.map((chat) => {
+        if (chat.projectId || !chat.project) return chat
+        const project = projects.find((candidate) => candidate.name === chat.project)
+        if (!project) return chat
+        changed = true
+        return { ...chat, projectId: project.id }
+      })
+
+      return changed ? migratedChats : currentChats
+    })
+  }, [projects, setChats])
+
+  useEffect(() => {
     const unsubscribe = window.graceAI.onChatEvent((event) => handleStreamEvent(event))
     return unsubscribe
   }, [activeRequestId])
@@ -325,6 +443,7 @@ export function App(): JSX.Element {
         setMobileSidebarOpen(false)
         setProviderSettingsOpen(false)
         setSkillsOpen(false)
+        setSetupAgentOpen(false)
       }
     }
 
@@ -392,7 +511,9 @@ export function App(): JSX.Element {
   function createNewChat(): void {
     const chat: Chat = {
       id: uid('chat'),
-      title: 'New chat',
+      title: t('newChat'),
+      projectId: activeProjectId ?? undefined,
+      project: activeProject?.name,
       messages: [],
       updatedAt: new Date().toISOString()
     }
@@ -421,7 +542,7 @@ export function App(): JSX.Element {
     const chat = chats.find((candidate) => candidate.id === chatId)
     if (!chat) return
 
-    const nextTitle = window.prompt('Rename chat', chat.title)?.trim()
+    const nextTitle = window.prompt(t('renameChat'), chat.title)?.trim()
     if (!nextTitle) return
 
     setChats((currentChats) =>
@@ -439,12 +560,14 @@ export function App(): JSX.Element {
 
   function deleteChat(chatId: string): void {
     const chat = chats.find((candidate) => candidate.id === chatId)
-    if (!chat || !window.confirm(`Delete "${chat.title}"?`)) return
+    if (!chat || !window.confirm(`${t('deleteChatConfirm')} "${chat.title}"?`)) return
 
     const nextChats = chats.filter((candidate) => candidate.id !== chatId)
     const fallbackChat: Chat = {
       id: uid('chat'),
-      title: 'New chat',
+      title: t('newChat'),
+      projectId: activeProjectId ?? undefined,
+      project: activeProject?.name,
       messages: [],
       updatedAt: new Date().toISOString()
     }
@@ -455,6 +578,81 @@ export function App(): JSX.Element {
     }
 
     setChats(resolvedChats)
+  }
+
+  function selectProject(projectId: string | null): void {
+    setActiveProjectId(projectId)
+    const firstProjectChat = chats.find((chat) =>
+      projectId ? resolveChatProjectId(chat, projects) === projectId : true
+    )
+    if (firstProjectChat) {
+      setActiveChatId(firstProjectChat.id)
+    }
+    setMobileSidebarOpen(false)
+  }
+
+  function createProject(): void {
+    const name = window.prompt(t('newProject'))?.trim()
+    if (!name) return
+
+    const project: Project = {
+      id: uid('project'),
+      name,
+      icon: 'folder',
+      color: projectColors[projects.length % projectColors.length]
+    }
+
+    setProjects((currentProjects) => [...currentProjects, project])
+    setActiveProjectId(project.id)
+  }
+
+  function renameProject(projectId: string): void {
+    const project = projects.find((candidate) => candidate.id === projectId)
+    if (!project) return
+
+    const name = window.prompt(t('renameProject'), project.name)?.trim()
+    if (!name) return
+
+    setProjects((currentProjects) =>
+      currentProjects.map((candidate) => (candidate.id === projectId ? { ...candidate, name } : candidate))
+    )
+    setChats((currentChats) =>
+      currentChats.map((chat) =>
+        resolveChatProjectId(chat, projects) === projectId ? { ...chat, project: name } : chat
+      )
+    )
+  }
+
+  function cycleProjectIcon(projectId: string): void {
+    setProjects((currentProjects) =>
+      currentProjects.map((project) =>
+        project.id === projectId ? { ...project, icon: getNextProjectIcon(project.icon) } : project
+      )
+    )
+  }
+
+  function cycleProjectColor(projectId: string): void {
+    setProjects((currentProjects) =>
+      currentProjects.map((project) =>
+        project.id === projectId ? { ...project, color: getNextProjectColor(project.color) } : project
+      )
+    )
+  }
+
+  function moveChatToProject(chatId: string, projectId: string | null): void {
+    const project = projectId ? projects.find((candidate) => candidate.id === projectId) : null
+    setChats((currentChats) =>
+      currentChats.map((chat) =>
+        chat.id === chatId
+          ? {
+              ...chat,
+              projectId: project?.id,
+              project: project?.name,
+              updatedAt: new Date().toISOString()
+            }
+          : chat
+      )
+    )
   }
 
   function sendMessage(value = composerValue): void {
@@ -550,16 +748,141 @@ export function App(): JSX.Element {
     setAttachedFiles((current) => [...current, ...nextFiles])
   }
 
+  function upsertMcpServer(server: Omit<McpServer, 'id' | 'createdAt'> & { id?: string; createdAt?: string }): void {
+    const nextServer: McpServer = {
+      id: server.id ?? uid('mcp'),
+      name: server.name.trim() || 'Custom MCP',
+      transport: server.transport,
+      url: server.url.trim(),
+      command: server.command.trim(),
+      envText: server.envText.trim(),
+      enabled: server.enabled,
+      createdAt: server.createdAt ?? new Date().toISOString()
+    }
+
+    setMcpServers((currentServers) => {
+      const exists = currentServers.some((candidate) => candidate.id === nextServer.id)
+      return exists
+        ? currentServers.map((candidate) => (candidate.id === nextServer.id ? nextServer : candidate))
+        : [nextServer, ...currentServers]
+    })
+  }
+
+  function updateMcpServer(serverId: string, patch: Partial<McpServer>): void {
+    setMcpServers((currentServers) =>
+      currentServers.map((server) => (server.id === serverId ? { ...server, ...patch } : server))
+    )
+  }
+
+  function deleteMcpServer(serverId: string): void {
+    setMcpServers((currentServers) => currentServers.filter((server) => server.id !== serverId))
+  }
+
+  async function runSetupAgent(input: string): Promise<void> {
+    const trimmedInput = input.trim()
+    if (!trimmedInput) return
+
+    const userMessage: SetupAgentMessage = {
+      id: uid('setup-user'),
+      role: 'user',
+      content: trimmedInput
+    }
+    setSetupAgentMessages((currentMessages) => [...currentMessages, userMessage])
+
+    const plan = createSetupAgentPlan(trimmedInput)
+    const localNotes: string[] = []
+
+    if (plan.mcpServer) {
+      upsertMcpServer({
+        name: plan.mcpServer.name,
+        transport: plan.mcpServer.transport,
+        url: plan.mcpServer.url,
+        command: plan.mcpServer.command,
+        envText: plan.mcpServer.envText,
+        enabled: true
+      })
+      localNotes.push(`MCP: ${plan.mcpServer.name}`)
+    }
+
+    if (plan.provider) {
+      try {
+        const provider = await window.graceAI.saveCustomProvider({
+          providerId: plan.provider.providerId,
+          baseUrl: plan.provider.baseUrl,
+          apiKey: plan.provider.apiKey
+        })
+        setProviders((currentProviders) =>
+          currentProviders.map((currentProvider) => (currentProvider.id === provider.id ? provider : currentProvider))
+        )
+        const targetModel = provider.models.find((model) => model.id === plan.provider?.modelId) ?? provider.models[0]
+        if (targetModel && provider.id) {
+          setModelId(`${provider.id}:${targetModel.id}`)
+        }
+        localNotes.push(`provider: ${provider.baseUrl}`)
+      } catch (error) {
+        localNotes.push(error instanceof Error ? error.message : 'Provider setup failed.')
+      }
+    } else if (plan.selectedModelId) {
+      const targetModel = availableModels.find((model) => model.modelId === plan.selectedModelId)
+      if (targetModel) {
+        setModelId(targetModel.id)
+        localNotes.push(`model: ${targetModel.label}`)
+      }
+    }
+
+    const setupProvider =
+      providers.find((provider) => provider.id === 'zed' && provider.configured) ??
+      providers.find((provider) => provider.configured && provider.baseUrl.includes('api.zed.md')) ??
+      providers.find((provider) => provider.id === 'custom' && provider.configured)
+    let remoteAnswer = ''
+    try {
+      const answer = await window.graceAI.askSetupAgent({
+        providerId: setupProvider?.id ?? 'zed',
+        modelId: 'dugin400',
+        messages: [{ role: 'user', content: trimmedInput }]
+      })
+      remoteAnswer = answer.configured ? answer.content : answer.content
+    } catch (error) {
+      remoteAnswer = error instanceof Error ? error.message : 'Setup agent request failed.'
+    }
+
+    const assistantContent = [
+      localNotes.length > 0 ? `Локально применено: ${localNotes.join(', ')}.` : plan.summary,
+      remoteAnswer
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+
+    setSetupAgentMessages((currentMessages) => [
+      ...currentMessages,
+      {
+        id: uid('setup-assistant'),
+        role: 'assistant',
+        content: assistantContent
+      }
+    ])
+  }
+
   return (
     <div className="app-shell">
-      <Sidebar
-        chats={chats}
+      <ProjectSidebar
+        chats={visibleChats}
+        allChats={chats}
+        projects={projects}
+        activeProjectId={activeProjectId}
         activeChatId={activeChat.id}
         open={sidebarOpen}
         mobileOpen={mobileSidebarOpen}
+        translate={t}
         onToggle={() => setSidebarOpen((open) => !open)}
         onMobileClose={() => setMobileSidebarOpen(false)}
         onNewChat={createNewChat}
+        onNewProject={createProject}
+        onSelectProject={selectProject}
+        onRenameProject={renameProject}
+        onCycleProjectIcon={cycleProjectIcon}
+        onCycleProjectColor={cycleProjectColor}
+        onMoveChatToProject={moveChatToProject}
         onToggleChatPinned={toggleChatPinned}
         onRenameChat={renameChat}
         onDeleteChat={deleteChat}
@@ -569,14 +892,17 @@ export function App(): JSX.Element {
         }}
         skillsCount={visibleSkills.length}
         onOpenSkills={() => setSkillsOpen(true)}
+        onOpenSetupAgent={() => setSetupAgentOpen(true)}
         onOpenProviderSettings={() => setProviderSettingsOpen(true)}
       />
 
       <main className={`main-pane ${canvasOpen ? 'with-canvas' : ''}`}>
         <TopBar
           title={activeChat.title}
+          project={activeProject}
           model={selectedModel}
           themeMode={themeMode}
+          translate={t}
           sidebarOpen={sidebarOpen}
           canvasOpen={canvasOpen}
           onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
@@ -588,6 +914,7 @@ export function App(): JSX.Element {
         <ChatThread
           chat={activeChat}
           isStreaming={isStreaming}
+          translate={t}
           onPromptClick={sendMessage}
           onCopy={(content) => navigator.clipboard?.writeText(content)}
           onRetry={() => activeChat.messages.at(-2)?.content && sendMessage(activeChat.messages.at(-2)!.content)}
@@ -596,6 +923,7 @@ export function App(): JSX.Element {
         <Composer
           value={composerValue}
           textareaRef={textareaRef}
+          translate={t}
           canSend={canSend}
           isStreaming={isStreaming}
           toolMenuOpen={toolMenuOpen}
@@ -633,6 +961,7 @@ export function App(): JSX.Element {
       {canvasOpen ? (
         <CanvasPanel
           value={canvasValue}
+          translate={t}
           onChange={setCanvasValue}
           onClose={() => setCanvasOpen(false)}
         />
@@ -642,8 +971,15 @@ export function App(): JSX.Element {
         <ProviderSettingsModal
           providers={providers}
           themeMode={themeMode}
+          locale={locale}
+          mcpServers={mcpServers}
+          translate={t}
           onClose={() => setProviderSettingsOpen(false)}
           onThemeChange={setThemeMode}
+          onLocaleChange={setLocale}
+          onUpsertMcpServer={upsertMcpServer}
+          onUpdateMcpServer={updateMcpServer}
+          onDeleteMcpServer={deleteMcpServer}
           onSaved={(provider) => {
             setProviders((currentProviders) =>
               currentProviders.map((currentProvider) => (currentProvider.id === provider.id ? provider : currentProvider))
@@ -655,9 +991,18 @@ export function App(): JSX.Element {
           }}
         />
       ) : null}
+      {setupAgentOpen ? (
+        <SetupAgentModal
+          messages={setupAgentMessages}
+          translate={t}
+          onClose={() => setSetupAgentOpen(false)}
+          onSend={runSetupAgent}
+        />
+      ) : null}
       {skillsOpen ? (
         <SkillsModal
           skills={visibleSkills}
+          translate={t}
           onClose={() => setSkillsOpen(false)}
           onInstallSkill={(skill) => {
             setInstalledSkills((currentSkills) =>
@@ -672,153 +1017,165 @@ export function App(): JSX.Element {
   )
 }
 
-function Sidebar(props: {
+function ProjectSidebar(props: {
   chats: Chat[]
+  allChats: Chat[]
+  projects: Project[]
+  activeProjectId: string | null
   activeChatId: string
   open: boolean
   mobileOpen: boolean
+  translate: Translate
   onToggle: () => void
   onMobileClose: () => void
   onNewChat: () => void
+  onNewProject: () => void
+  onSelectProject: (projectId: string | null) => void
+  onRenameProject: (projectId: string) => void
+  onCycleProjectIcon: (projectId: string) => void
+  onCycleProjectColor: (projectId: string) => void
+  onMoveChatToProject: (chatId: string, projectId: string | null) => void
   onSelectChat: (chatId: string) => void
   onToggleChatPinned: (chatId: string) => void
   onRenameChat: (chatId: string) => void
   onDeleteChat: (chatId: string) => void
   skillsCount: number
   onOpenSkills: () => void
+  onOpenSetupAgent: () => void
   onOpenProviderSettings: () => void
 }): JSX.Element {
-  const {
-    chats,
-    activeChatId,
-    open,
-    mobileOpen,
-    onToggle,
-    onMobileClose,
-    onNewChat,
-    onSelectChat,
-    onToggleChatPinned,
-    onRenameChat,
-    onDeleteChat,
-    skillsCount,
-    onOpenSkills,
-    onOpenProviderSettings
-  } = props
-  const pinnedChats = chats.filter((chat) => chat.pinned)
-  const recentChats = chats.filter((chat) => !chat.pinned)
-  const projects = Array.from(new Set(chats.map((chat) => chat.project).filter(Boolean))) as string[]
+  const t = props.translate
+  const pinnedChats = props.chats.filter((chat) => chat.pinned)
+  const recentChats = props.chats.filter((chat) => !chat.pinned)
 
   return (
     <>
-      <aside className={`sidebar ${open ? 'expanded' : 'collapsed'} ${mobileOpen ? 'mobile-open' : ''}`}>
+      <aside className={`sidebar ${props.open ? 'expanded' : 'collapsed'} ${props.mobileOpen ? 'mobile-open' : ''}`}>
         <div className="sidebar-top">
-          <button className="icon-button" type="button" aria-label="Toggle sidebar" title="Toggle sidebar" onClick={onToggle}>
+          <button className="icon-button" type="button" aria-label={t('toggleSidebar')} title={t('toggleSidebar')} onClick={props.onToggle}>
             <Menu size={18} />
           </button>
-          {open ? (
-            <button className="new-chat-button" type="button" onClick={onNewChat}>
+          {props.open ? (
+            <button className="new-chat-button" type="button" onClick={props.onNewChat}>
               <Plus size={17} />
-              New chat
+              {t('newChat')}
             </button>
           ) : null}
         </div>
 
-        {open ? (
+        {props.open ? (
           <>
             <label className="search-box">
               <Search size={16} />
-              <input type="search" placeholder="Search chats" aria-label="Search chats" />
+              <input type="search" placeholder={t('searchChats')} aria-label={t('searchChats')} />
             </label>
 
-            <SidebarSection title="Pinned" icon={<Pin size={14} />}>
+            <SidebarSection title={t('pinned')} icon={<Pin size={14} />}>
               {pinnedChats.map((chat) => (
                 <SidebarRow
                   key={chat.id}
                   chat={chat}
-                  active={chat.id === activeChatId}
-                  onSelect={onSelectChat}
-                  onTogglePinned={onToggleChatPinned}
-                  onRename={onRenameChat}
-                  onDelete={onDeleteChat}
+                  active={chat.id === props.activeChatId}
+                  projects={props.projects}
+                  translate={t}
+                  onSelect={props.onSelectChat}
+                  onMoveToProject={props.onMoveChatToProject}
+                  onTogglePinned={props.onToggleChatPinned}
+                  onRename={props.onRenameChat}
+                  onDelete={props.onDeleteChat}
                 />
               ))}
             </SidebarSection>
 
-            <SidebarSection title="Projects" icon={<Folder size={14} />}>
-              {projects.map((project) => (
-                <button className="sidebar-row" key={project} type="button">
-                  <Folder size={15} />
-                  <span>{project}</span>
-                  <MoreHorizontal className="row-more" size={15} />
-                </button>
+            <SidebarSection title={t('projects')} icon={<Folder size={14} />}>
+              <button className={`sidebar-row ${props.activeProjectId === null ? 'active' : ''}`} type="button" onClick={() => props.onSelectProject(null)}>
+                <History size={15} />
+                <span>{t('allChats')}</span>
+                <small>{props.allChats.length}</small>
+              </button>
+              {props.projects.map((project) => (
+                <ProjectRow
+                  key={project.id}
+                  project={project}
+                  active={project.id === props.activeProjectId}
+                  chatCount={props.allChats.filter((chat) => resolveChatProjectId(chat, props.projects) === project.id).length}
+                  translate={t}
+                  onSelect={props.onSelectProject}
+                  onRename={props.onRenameProject}
+                  onCycleIcon={props.onCycleProjectIcon}
+                  onCycleColor={props.onCycleProjectColor}
+                />
               ))}
+              <button className="sidebar-row muted-row" type="button" onClick={props.onNewProject}>
+                <Plus size={15} />
+                <span>{t('newProject')}</span>
+              </button>
             </SidebarSection>
 
-            <SidebarSection title="Recents" icon={<History size={14} />}>
+            <SidebarSection title={t('recents')} icon={<History size={14} />}>
               {recentChats.map((chat) => (
                 <SidebarRow
                   key={chat.id}
                   chat={chat}
-                  active={chat.id === activeChatId}
-                  onSelect={onSelectChat}
-                  onTogglePinned={onToggleChatPinned}
-                  onRename={onRenameChat}
-                  onDelete={onDeleteChat}
+                  active={chat.id === props.activeChatId}
+                  projects={props.projects}
+                  translate={t}
+                  onSelect={props.onSelectChat}
+                  onMoveToProject={props.onMoveChatToProject}
+                  onTogglePinned={props.onToggleChatPinned}
+                  onRename={props.onRenameChat}
+                  onDelete={props.onDeleteChat}
                 />
               ))}
             </SidebarSection>
           </>
         ) : (
           <div className="icon-rail" aria-label="Collapsed navigation">
-            <button className="icon-button" type="button" aria-label="New chat" title="New chat" onClick={onNewChat}>
+            <button className="icon-button" type="button" aria-label={t('newChat')} title={t('newChat')} onClick={props.onNewChat}>
               <Plus size={18} />
             </button>
-            <button className="icon-button" type="button" aria-label="Search" title="Search">
+            <button className="icon-button" type="button" aria-label={t('searchChats')} title={t('searchChats')}>
               <Search size={18} />
             </button>
-            <button className="icon-button" type="button" aria-label="Pinned chats" title="Pinned chats">
+            <button className="icon-button" type="button" aria-label={t('pinned')} title={t('pinned')}>
               <Pin size={18} />
             </button>
-            <button className="icon-button" type="button" aria-label="Files" title="Files">
+            <button className="icon-button" type="button" aria-label={t('files')} title={t('files')}>
               <FileText size={18} />
             </button>
           </div>
         )}
 
-        {open ? (
+        {props.open ? (
           <div className="sidebar-bottom">
-            <button className="account-row" type="button" onClick={onOpenSkills}>
+            <button className="account-row" type="button" onClick={props.onOpenSkills}>
               <BookOpen size={18} />
               <span>
-                <strong>Skills</strong>
-                <small>{skillsCount} preset / installed</small>
+                <strong>{t('skills')}</strong>
+                <small>{props.skillsCount} preset / installed</small>
               </span>
               <ChevronDown size={15} />
             </button>
+            <button className="sidebar-row" type="button" onClick={props.onOpenSetupAgent}>
+              <Bot size={15} />
+              <span>{t('setupAgent')}</span>
+            </button>
             <button className="sidebar-row" type="button">
               <Archive size={15} />
-              <span>Library / Files</span>
+              <span>{t('libraryFiles')}</span>
             </button>
             <button className="sidebar-row" type="button">
               <Clock3 size={15} />
-              <span>Scheduled tasks</span>
+              <span>{t('scheduledTasks')}</span>
             </button>
-            <button className="sidebar-row" type="button">
-              <Zap size={15} />
-              <span>Apps / integrations</span>
-            </button>
-            <button className="account-row" type="button" onClick={onOpenProviderSettings}>
-              <span className="avatar">G</span>
-              <span>
-                <strong>Grace local</strong>
-                <small>Settings and providers</small>
-              </span>
+            <button className="sidebar-row" type="button" onClick={props.onOpenProviderSettings}>
               <Settings size={15} />
+              <span>{t('settings')}</span>
             </button>
           </div>
         ) : null}
       </aside>
-      {mobileOpen ? <button className="scrim" aria-label="Close sidebar" type="button" onClick={onMobileClose} /> : null}
+      {props.mobileOpen ? <button className="scrim" aria-label={t('close')} type="button" onClick={props.onMobileClose} /> : null}
     </>
   )
 }
@@ -835,15 +1192,78 @@ function SidebarSection(props: { title: string; icon: JSX.Element; children: Rea
   )
 }
 
+function ProjectRow(props: {
+  project: Project
+  active: boolean
+  chatCount: number
+  translate: Translate
+  onSelect: (projectId: string) => void
+  onRename: (projectId: string) => void
+  onCycleIcon: (projectId: string) => void
+  onCycleColor: (projectId: string) => void
+}): JSX.Element {
+  const [actionsOpen, setActionsOpen] = useState(false)
+  const Icon = getProjectIcon(props.project.icon)
+
+  return (
+    <div className={`sidebar-row-shell project-row-shell ${props.active ? 'active' : ''}`}>
+      <button className="sidebar-row-main project-row-main" type="button" onClick={() => props.onSelect(props.project.id)}>
+        <span className="project-icon-dot" style={{ color: props.project.color, backgroundColor: `${props.project.color}22` }}>
+          <Icon size={15} />
+        </span>
+        <span>{props.project.name}</span>
+        <small>{props.chatCount}</small>
+      </button>
+      <button
+        className="row-action-button"
+        type="button"
+        aria-label={props.translate('projectIcon')}
+        title={props.translate('projectIcon')}
+        onClick={() => setActionsOpen((open) => !open)}
+      >
+        <MoreHorizontal size={15} />
+      </button>
+      {actionsOpen ? (
+        <div className="row-action-menu project-action-menu">
+          <button
+            type="button"
+            onClick={() => {
+              props.onRename(props.project.id)
+              setActionsOpen(false)
+            }}
+          >
+            <Pencil size={14} />
+            {props.translate('renameProject')}
+          </button>
+          <button type="button" onClick={() => props.onCycleIcon(props.project.id)}>
+            <Folder size={14} />
+            {props.translate('projectIcon')}
+          </button>
+          <button type="button" onClick={() => props.onCycleColor(props.project.id)}>
+            <span className="project-color-dot" style={{ backgroundColor: props.project.color }} />
+            {props.translate('projectColor')}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function SidebarRow(props: {
   chat: Chat
   active: boolean
+  projects?: Project[]
+  translate?: Translate
   onSelect: (chatId: string) => void
+  onMoveToProject?: (chatId: string, projectId: string | null) => void
   onTogglePinned: (chatId: string) => void
   onRename: (chatId: string) => void
   onDelete: (chatId: string) => void
 }): JSX.Element {
   const [actionsOpen, setActionsOpen] = useState(false)
+  const fallbackTranslate: Translate = (key) => translate('en', key)
+  const t = props.translate ?? fallbackTranslate
+  const projects = props.projects ?? []
 
   return (
     <div className={`sidebar-row-shell ${props.active ? 'active' : ''}`}>
@@ -870,8 +1290,39 @@ function SidebarRow(props: {
             }}
           >
             <Pin size={14} />
-            {props.chat.pinned ? 'Unpin chat' : 'Pin chat'}
+            {props.chat.pinned ? t('unpinChat') : t('pinChat')}
           </button>
+          {projects.length > 0 ? (
+            <>
+              <div className="row-action-label">{t('moveToProject')}</div>
+              {projects.map((project) => {
+                const Icon = getProjectIcon(project.icon)
+                return (
+                  <button
+                    key={project.id}
+                    type="button"
+                    onClick={() => {
+                      props.onMoveToProject?.(props.chat.id, project.id)
+                      setActionsOpen(false)
+                    }}
+                  >
+                    <Icon size={14} />
+                    {project.name}
+                  </button>
+                )
+              })}
+              <button
+                type="button"
+                onClick={() => {
+                  props.onMoveToProject?.(props.chat.id, null)
+                  setActionsOpen(false)
+                }}
+              >
+                <History size={14} />
+                {t('allChats')}
+              </button>
+            </>
+          ) : null}
           <button
             type="button"
             onClick={() => {
@@ -880,7 +1331,7 @@ function SidebarRow(props: {
             }}
           >
             <Pencil size={14} />
-            Rename
+            {t('rename')}
           </button>
           <button
             type="button"
@@ -890,7 +1341,7 @@ function SidebarRow(props: {
             }}
           >
             <Trash2 size={14} />
-            Delete
+            {t('delete')}
           </button>
         </div>
       ) : null}
@@ -900,8 +1351,10 @@ function SidebarRow(props: {
 
 function TopBar(props: {
   title: string
+  project: Project | null
   model: ModelOption
   themeMode: ThemeMode
+  translate: Translate
   sidebarOpen: boolean
   canvasOpen: boolean
   onOpenMobileSidebar: () => void
@@ -909,26 +1362,26 @@ function TopBar(props: {
   onToggleCanvas: () => void
   onToggleTheme: () => void
 }): JSX.Element {
-  const themeLabel = props.themeMode === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'
+  const themeLabel = props.themeMode === 'dark' ? props.translate('light') : props.translate('dark')
 
   return (
     <header className="topbar">
       <div className="topbar-left">
-        <button className="icon-button mobile-menu-button" type="button" aria-label="Open sidebar" title="Open sidebar" onClick={props.onOpenMobileSidebar}>
+        <button className="icon-button mobile-menu-button" type="button" aria-label={props.translate('toggleSidebar')} title={props.translate('toggleSidebar')} onClick={props.onOpenMobileSidebar}>
           <Menu size={18} />
         </button>
-        <button className="icon-button desktop-only" type="button" aria-label="Toggle sidebar" title="Toggle sidebar" onClick={props.onToggleSidebar}>
+        <button className="icon-button desktop-only" type="button" aria-label={props.translate('toggleSidebar')} title={props.translate('toggleSidebar')} onClick={props.onToggleSidebar}>
           <Menu size={18} />
         </button>
         <div className="title-block">
           <strong>{props.title}</strong>
-          <span>{props.model.label}</span>
+          <span>{props.project ? `${props.project.name} · ${props.model.label}` : props.model.label}</span>
         </div>
       </div>
       <div className="topbar-actions">
         <button className="text-button" type="button">
           <ShareIcon />
-          Share
+          {props.translate('share')}
         </button>
         <button className="icon-button" type="button" aria-label={themeLabel} title={themeLabel} onClick={props.onToggleTheme}>
           {props.themeMode === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
@@ -936,8 +1389,8 @@ function TopBar(props: {
         <button
           className={`icon-button ${props.canvasOpen ? 'active' : ''}`}
           type="button"
-          aria-label="Toggle canvas"
-          title="Toggle canvas"
+          aria-label={props.translate('toggleCanvas')}
+          title={props.translate('toggleCanvas')}
           onClick={props.onToggleCanvas}
         >
           <PanelRight size={18} />
@@ -950,6 +1403,7 @@ function TopBar(props: {
 function ChatThread(props: {
   chat: Chat
   isStreaming: boolean
+  translate: Translate
   onPromptClick: (value: string) => void
   onCopy: (content: string) => void
   onRetry: () => void
@@ -967,7 +1421,7 @@ function ChatThread(props: {
           <div className="mark" aria-hidden="true">
             <Bot size={28} />
           </div>
-          <h1>How can Grace help?</h1>
+          <h1>{props.translate('howCanHelp')}</h1>
           <div className="suggestion-grid">
             {promptSuggestions.map((suggestion) => (
               <button key={suggestion} className="suggestion-card" type="button" onClick={() => props.onPromptClick(suggestion)}>
@@ -987,13 +1441,14 @@ function ChatThread(props: {
           <MessageBubble
             key={message.id}
             message={message}
+            translate={props.translate}
             onCopy={props.onCopy}
             onRetry={props.onRetry}
           />
         ))}
         {props.isStreaming ? (
           <div className="stream-status" aria-live="polite">
-            Grace is responding<span className="cursor-dot" />
+            Grace отвечает<span className="cursor-dot" />
           </div>
         ) : null}
         <div ref={bottomRef} />
@@ -1004,6 +1459,7 @@ function ChatThread(props: {
 
 function MessageBubble(props: {
   message: Message
+  translate: Translate
   onCopy: (content: string) => void
   onRetry: () => void
 }): JSX.Element {
@@ -1029,15 +1485,15 @@ function MessageBubble(props: {
         )}
       </div>
       <div className="message-actions">
-        <button className="icon-button small" type="button" aria-label="Copy message" title="Copy" onClick={() => onCopy(message.content)}>
+        <button className="icon-button small" type="button" aria-label={props.translate('copy')} title={props.translate('copy')} onClick={() => onCopy(message.content)}>
           <Copy size={15} />
         </button>
         {message.role === 'assistant' ? (
           <>
-            <button className="icon-button small" type="button" aria-label="Regenerate response" title="Regenerate" onClick={onRetry}>
+            <button className="icon-button small" type="button" aria-label={props.translate('regenerate')} title={props.translate('regenerate')} onClick={onRetry}>
               <RefreshCw size={15} />
             </button>
-            <button className="icon-button small" type="button" aria-label="Good response" title="Good response">
+            <button className="icon-button small" type="button" aria-label={props.translate('goodResponse')} title={props.translate('goodResponse')}>
               <ThumbsUp size={15} />
             </button>
             <button className="icon-button small" type="button" aria-label="Bad response" title="Bad response">
@@ -1078,6 +1534,7 @@ function CodeBlock(props: { language: string; value: string }): JSX.Element {
 function Composer(props: {
   value: string
   textareaRef: React.RefObject<HTMLTextAreaElement>
+  translate: Translate
   canSend: boolean
   isStreaming: boolean
   toolMenuOpen: boolean
@@ -1100,7 +1557,7 @@ function Composer(props: {
   onOpenProviderSettings: () => void
 }): JSX.Element {
   return (
-    <section className="composer-zone" aria-label="Message composer">
+    <section className="composer-zone" aria-label={props.translate('messageGrace')}>
       <div className="composer-shell">
         <div className="composer-chips">
           {props.selectedTools.map((tool) => (
@@ -1120,8 +1577,8 @@ function Composer(props: {
           ref={props.textareaRef}
           value={props.value}
           rows={1}
-          aria-label="Message Grace"
-          placeholder="Message Grace..."
+          aria-label={props.translate('messageGrace')}
+          placeholder={props.translate('messageGrace')}
           onChange={(event) => props.onValueChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
@@ -1133,7 +1590,7 @@ function Composer(props: {
 
         <div className="composer-footer">
           <div className="composer-left">
-            <button className="icon-button" type="button" aria-label="Open tool menu" title="Tools" onClick={props.onToggleToolMenu}>
+            <button className="icon-button" type="button" aria-label={props.translate('connectApp')} title={props.translate('connectApp')} onClick={props.onToggleToolMenu}>
               <Plus size={18} />
             </button>
             <button className="model-chip" type="button" onClick={props.onToggleModelMenu}>
@@ -1142,15 +1599,15 @@ function Composer(props: {
             </button>
           </div>
           <div className="composer-right">
-            <button className="icon-button" type="button" aria-label="Voice input" title="Voice">
+            <button className="icon-button" type="button" aria-label={props.translate('voice')} title={props.translate('voice')}>
               <Mic size={18} />
             </button>
             {props.isStreaming ? (
-              <button className="send-button" type="button" aria-label="Stop response" title="Stop" onClick={props.onStop}>
+              <button className="send-button" type="button" aria-label={props.translate('stop')} title={props.translate('stop')} onClick={props.onStop}>
                 <Square size={16} />
               </button>
             ) : (
-              <button className="send-button" type="button" aria-label="Send message" title="Send" disabled={!props.canSend} onClick={props.onSend}>
+              <button className="send-button" type="button" aria-label={props.translate('send')} title={props.translate('send')} disabled={!props.canSend} onClick={props.onSend}>
                 <Send size={16} />
               </button>
             )}
@@ -1163,6 +1620,7 @@ function Composer(props: {
             selectedModel={props.selectedModel}
             models={props.availableModels}
             effort={props.effort}
+            translate={props.translate}
             onSelectModel={props.onSelectModel}
             onEffortChange={props.onEffortChange}
             onOpenProviderSettings={props.onOpenProviderSettings}
@@ -1198,6 +1656,7 @@ function ModelMenu(props: {
   selectedModel: ModelOption
   models: ModelOption[]
   effort: 'low' | 'medium' | 'high'
+  translate: Translate
   onSelectModel: (model: ModelOption) => void
   onEffortChange: (effort: 'low' | 'medium' | 'high') => void
   onOpenProviderSettings: () => void
@@ -1208,16 +1667,16 @@ function ModelMenu(props: {
   const firstFilteredModel = filteredModels[0]
 
   return (
-    <div className="floating-menu model-menu" role="menu" aria-label="Model picker">
-      <div className="menu-heading">Choose model</div>
+    <div className="floating-menu model-menu" role="menu" aria-label={props.translate('chooseModel')}>
+      <div className="menu-heading">{props.translate('chooseModel')}</div>
       <label className="model-search">
         <Search size={15} />
         <input
           autoFocus
           value={modelSearchQuery}
           type="search"
-          placeholder="Search models"
-          aria-label="Search models"
+          placeholder={props.translate('modelSearch')}
+          aria-label={props.translate('searchModels')}
           onChange={(event) => setModelSearchQuery(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && firstFilteredModel) {
@@ -1248,7 +1707,7 @@ function ModelMenu(props: {
             </section>
           ))
         ) : (
-          <p className="model-empty-state">No models found.</p>
+          <p className="model-empty-state">{props.translate('noModelsFound')}</p>
         )}
       </div>
       {props.selectedModel.supportsEffort ? (
@@ -1260,14 +1719,14 @@ function ModelMenu(props: {
               type="button"
               onClick={() => props.onEffortChange(value)}
             >
-              {value}
+              {props.translate(value === 'low' ? 'effortLow' : value === 'medium' ? 'effortMedium' : 'effortHigh')}
             </button>
           ))}
         </div>
       ) : null}
       <button className="menu-secondary-action" type="button" onClick={props.onOpenProviderSettings}>
         <Settings size={16} />
-        Manage custom provider
+        {props.translate('providerSettings')}
       </button>
     </div>
   )
@@ -1276,8 +1735,15 @@ function ModelMenu(props: {
 function ProviderSettingsModal(props: {
   providers: CustomProviderSummary[]
   themeMode: ThemeMode
+  locale: Locale
+  mcpServers: McpServer[]
+  translate: Translate
   onClose: () => void
   onThemeChange: (themeMode: ThemeMode) => void
+  onLocaleChange: (locale: Locale) => void
+  onUpsertMcpServer: (server: Omit<McpServer, 'id' | 'createdAt'> & { id?: string; createdAt?: string }) => void
+  onUpdateMcpServer: (serverId: string, patch: Partial<McpServer>) => void
+  onDeleteMcpServer: (serverId: string) => void
   onSaved: (provider: CustomProviderSummary) => void
 }): JSX.Element {
   const [selectedProviderId, setSelectedProviderId] = useState(props.providers.find((provider) => provider.configured)?.id ?? 'openai')
@@ -1296,6 +1762,13 @@ function ProviderSettingsModal(props: {
   const [apiKey, setApiKey] = useState('')
   const [status, setStatus] = useState<'idle' | 'saving' | 'refreshing'>('idle')
   const [error, setError] = useState<string | null>(selectedProvider.lastError ?? null)
+  const [mcpDraft, setMcpDraft] = useState({
+    name: '',
+    transport: 'command' as McpServer['transport'],
+    url: '',
+    command: '',
+    envText: ''
+  })
 
   useEffect(() => {
     const provider = props.providers.find((candidate) => candidate.id === selectedProviderId)
@@ -1347,39 +1820,75 @@ function ProviderSettingsModal(props: {
     }
   }
 
+  function addMcpServer(): void {
+    const hasTarget = mcpDraft.transport === 'http' ? mcpDraft.url.trim() : mcpDraft.command.trim()
+    if (!mcpDraft.name.trim() || !hasTarget) return
+
+    props.onUpsertMcpServer({
+      name: mcpDraft.name,
+      transport: mcpDraft.transport,
+      url: mcpDraft.url,
+      command: mcpDraft.command,
+      envText: mcpDraft.envText,
+      enabled: true
+    })
+    setMcpDraft({
+      name: '',
+      transport: 'command',
+      url: '',
+      command: '',
+      envText: ''
+    })
+  }
+
   return (
     <div className="modal-backdrop" role="presentation">
       <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <header className="settings-header">
           <div>
-            <h2 id="settings-title">Settings</h2>
-            <p>Manage appearance, providers, and model access.</p>
+            <h2 id="settings-title">{props.translate('settings')}</h2>
+            <p>{props.translate('providerSettingsHelp')}</p>
           </div>
-          <button className="icon-button" type="button" aria-label="Close settings" title="Close" onClick={props.onClose}>
+          <button className="icon-button" type="button" aria-label={props.translate('close')} title={props.translate('close')} onClick={props.onClose}>
             <X size={18} />
           </button>
         </header>
 
         <section className="settings-section" aria-labelledby="appearance-settings-title">
           <div>
-            <strong id="appearance-settings-title">Appearance</strong>
-            <p>Theme</p>
+            <strong id="appearance-settings-title">{props.translate('appearance')}</strong>
+            <p>{props.translate('appearanceHelp')}</p>
           </div>
-          <div className="theme-segmented" role="group" aria-label="Theme">
-            <button className={props.themeMode === 'light' ? 'active' : ''} type="button" aria-pressed={props.themeMode === 'light'} onClick={() => props.onThemeChange('light')}>
-              <Sun size={15} />
-              Light
-            </button>
-            <button className={props.themeMode === 'dark' ? 'active' : ''} type="button" aria-pressed={props.themeMode === 'dark'} onClick={() => props.onThemeChange('dark')}>
-              <Moon size={15} />
-              Dark
-            </button>
+          <div className="settings-inline-controls">
+            <div className="theme-segmented" role="group" aria-label={props.translate('theme')}>
+              <button className={props.themeMode === 'light' ? 'active' : ''} type="button" aria-pressed={props.themeMode === 'light'} onClick={() => props.onThemeChange('light')}>
+                <Sun size={15} />
+                {props.translate('light')}
+              </button>
+              <button className={props.themeMode === 'dark' ? 'active' : ''} type="button" aria-pressed={props.themeMode === 'dark'} onClick={() => props.onThemeChange('dark')}>
+                <Moon size={15} />
+                {props.translate('dark')}
+              </button>
+            </div>
+            <div className="theme-segmented language-segmented" role="group" aria-label={props.translate('language')}>
+              {locales.map((item) => (
+                <button
+                  key={item.id}
+                  className={props.locale === item.id ? 'active' : ''}
+                  type="button"
+                  aria-pressed={props.locale === item.id}
+                  onClick={() => props.onLocaleChange(item.id)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
           </div>
         </section>
 
         <div className="settings-subheader">
-          <strong>Providers</strong>
-          <p>Connect a preset provider. Models load from the provider after the key is saved.</p>
+          <strong>{props.translate('providerSettings')}</strong>
+          <p>Models load from the provider after the key is saved.</p>
         </div>
 
         <div className="provider-grid">
@@ -1398,15 +1907,15 @@ function ProviderSettingsModal(props: {
 
         <div className="settings-form">
           <label>
-            <span>Base URL</span>
+            <span>{props.translate('baseUrl')}</span>
             <input value={baseUrl} type="url" placeholder={selectedPreset.baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
           </label>
           <label>
-            <span>API key</span>
+            <span>{props.translate('apiKey')}</span>
             <input
               value={apiKey}
               type="password"
-              placeholder={hasStoredKey ? 'Stored securely. Enter a new key to replace it.' : `${selectedProvider.label} API key`}
+              placeholder={hasStoredKey ? props.translate('apiKeyPlaceholder') : `${selectedProvider.label} API key`}
               onChange={(event) => setApiKey(event.target.value)}
             />
           </label>
@@ -1417,10 +1926,10 @@ function ProviderSettingsModal(props: {
         <div className="settings-actions">
           <button className="text-button" type="button" onClick={refreshModels} disabled={!hasStoredKey || status !== 'idle'}>
             <RefreshCw size={15} />
-            Refresh models
+            {props.translate('refreshModels')}
           </button>
           <button className="primary-button" type="button" onClick={saveProvider} disabled={!canSave || status !== 'idle'}>
-            {status === 'saving' ? 'Checking...' : status === 'refreshing' ? 'Refreshing...' : 'Save provider'}
+            {status === 'saving' ? 'Checking...' : status === 'refreshing' ? 'Refreshing...' : props.translate('saveProvider')}
           </button>
         </div>
 
@@ -1442,6 +1951,144 @@ function ProviderSettingsModal(props: {
             )}
           </div>
         </div>
+
+        <div className="settings-subheader">
+          <strong>{props.translate('mcpServers')}</strong>
+          <p>{props.translate('mcpServersHelp')}</p>
+        </div>
+
+        <div className="mcp-list">
+          {props.mcpServers.map((server) => (
+            <article className="mcp-card" key={server.id}>
+              <div>
+                <strong>{server.name}</strong>
+                <span>{server.transport === 'http' ? server.url : server.command}</span>
+              </div>
+              <div className="mcp-card-actions">
+                <button
+                  className={`mini-toggle ${server.enabled ? 'active' : ''}`}
+                  type="button"
+                  onClick={() => props.onUpdateMcpServer(server.id, { enabled: !server.enabled })}
+                >
+                  {server.enabled ? props.translate('enabled') : props.translate('disabled')}
+                </button>
+                <button className="icon-button small" type="button" aria-label={props.translate('delete')} title={props.translate('delete')} onClick={() => props.onDeleteMcpServer(server.id)}>
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+
+        <div className="settings-form mcp-form">
+          <label>
+            <span>{props.translate('name')}</span>
+            <input value={mcpDraft.name} placeholder="Notion" onChange={(event) => setMcpDraft((draft) => ({ ...draft, name: event.target.value }))} />
+          </label>
+          <label>
+            <span>{props.translate('transport')}</span>
+            <select value={mcpDraft.transport} onChange={(event) => setMcpDraft((draft) => ({ ...draft, transport: event.target.value as McpServer['transport'] }))}>
+              <option value="command">Command</option>
+              <option value="http">HTTP</option>
+            </select>
+          </label>
+          {mcpDraft.transport === 'http' ? (
+            <label>
+              <span>URL</span>
+              <input value={mcpDraft.url} type="url" placeholder="https://mcp.example.com" onChange={(event) => setMcpDraft((draft) => ({ ...draft, url: event.target.value }))} />
+            </label>
+          ) : (
+            <label>
+              <span>{props.translate('command')}</span>
+              <input value={mcpDraft.command} placeholder="npx @notionhq/notion-mcp-server" onChange={(event) => setMcpDraft((draft) => ({ ...draft, command: event.target.value }))} />
+            </label>
+          )}
+          <label>
+            <span>{props.translate('env')}</span>
+            <textarea value={mcpDraft.envText} placeholder="NOTION_TOKEN=..." onChange={(event) => setMcpDraft((draft) => ({ ...draft, envText: event.target.value }))} />
+          </label>
+          <div className="settings-actions">
+            <button className="primary-button" type="button" onClick={addMcpServer}>
+              {props.translate('mcpAdd')}
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function SetupAgentModal(props: {
+  messages: SetupAgentMessage[]
+  translate: Translate
+  onClose: () => void
+  onSend: (value: string) => Promise<void>
+}): JSX.Element {
+  const [value, setValue] = useState('')
+  const [sending, setSending] = useState(false)
+  const bottomRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [props.messages])
+
+  async function submit(): Promise<void> {
+    const trimmedValue = value.trim()
+    if (!trimmedValue || sending) return
+    setSending(true)
+    setValue('')
+    try {
+      await props.onSend(trimmedValue)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="settings-modal setup-agent-modal" role="dialog" aria-modal="true" aria-labelledby="setup-agent-title">
+        <header className="settings-header">
+          <div>
+            <h2 id="setup-agent-title">{props.translate('setupAgent')}</h2>
+            <p>{props.translate('setupAgentHelp')}</p>
+          </div>
+          <button className="icon-button" type="button" aria-label={props.translate('close')} title={props.translate('close')} onClick={props.onClose}>
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="setup-agent-route">
+          <Bot size={16} />
+          <span>{props.translate('setupAgentRoute')}</span>
+        </div>
+
+        <div className="setup-agent-thread">
+          {props.messages.map((message) => (
+            <article className={`setup-agent-message ${message.role}`} key={message.id}>
+              {message.content}
+            </article>
+          ))}
+          {sending ? <article className="setup-agent-message assistant">...</article> : null}
+          <div ref={bottomRef} />
+        </div>
+
+        <div className="setup-agent-composer">
+          <textarea
+            value={value}
+            rows={3}
+            placeholder={props.translate('setupAgentPlaceholder')}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                void submit()
+              }
+            }}
+          />
+          <button className="send-button" type="button" aria-label={props.translate('send')} title={props.translate('send')} disabled={!value.trim() || sending} onClick={() => void submit()}>
+            <Send size={16} />
+          </button>
+        </div>
       </section>
     </div>
   )
@@ -1449,6 +2096,7 @@ function ProviderSettingsModal(props: {
 
 function SkillsModal(props: {
   skills: SkillSummary[]
+  translate: Translate
   onClose: () => void
   onInstallSkill: (skill: SkillSummary) => void
 }): JSX.Element {
@@ -1491,10 +2139,10 @@ function SkillsModal(props: {
       <section className="settings-modal skills-modal" role="dialog" aria-modal="true" aria-labelledby="skills-title">
         <header className="settings-header">
           <div>
-            <h2 id="skills-title">Skills</h2>
+            <h2 id="skills-title">{props.translate('skills')}</h2>
             <p>Preset skills and GitHub skill links available to Grace.</p>
           </div>
-          <button className="icon-button" type="button" aria-label="Close skills" title="Close" onClick={props.onClose}>
+          <button className="icon-button" type="button" aria-label={props.translate('close')} title={props.translate('close')} onClick={props.onClose}>
             <X size={18} />
           </button>
         </header>
@@ -1551,34 +2199,34 @@ function Chip(props: { label: string; icon?: JSX.Element; onRemove: () => void }
   )
 }
 
-function CanvasPanel(props: { value: string; onChange: (value: string) => void; onClose: () => void }): JSX.Element {
+function CanvasPanel(props: { value: string; translate: Translate; onChange: (value: string) => void; onClose: () => void }): JSX.Element {
   return (
     <aside className="canvas-panel" aria-label="Canvas editor">
       <header className="canvas-header">
-        <button className="icon-button mobile-only" type="button" aria-label="Close canvas" title="Back" onClick={props.onClose}>
+        <button className="icon-button mobile-only" type="button" aria-label={props.translate('close')} title={props.translate('close')} onClick={props.onClose}>
           <X size={18} />
         </button>
         <div>
-          <strong>Working canvas</strong>
+          <strong>{props.translate('workingCanvas')}</strong>
           <span>Version 1 · Editable draft</span>
         </div>
         <div className="canvas-actions">
           <button className="text-button" type="button" onClick={() => navigator.clipboard?.writeText(props.value)}>
             <Copy size={15} />
-            Copy
+            {props.translate('copy')}
           </button>
-          <button className="icon-button" type="button" aria-label="Delete draft" title="Delete draft">
+          <button className="icon-button" type="button" aria-label={props.translate('delete')} title={props.translate('delete')}>
             <Trash2 size={17} />
           </button>
-          <button className="icon-button" type="button" aria-label="Close canvas" title="Close canvas" onClick={props.onClose}>
+          <button className="icon-button" type="button" aria-label={props.translate('close')} title={props.translate('close')} onClick={props.onClose}>
             <X size={18} />
           </button>
         </div>
       </header>
       <div className="canvas-toolbar">
-        <button type="button">Ask about selection</button>
-        <button type="button">Export</button>
-        <button type="button">History</button>
+        <button type="button">{props.translate('askSelection')}</button>
+        <button type="button">{props.translate('export')}</button>
+        <button type="button">{props.translate('history')}</button>
       </div>
       <textarea value={props.value} onChange={(event) => props.onChange(event.target.value)} aria-label="Canvas document" />
     </aside>

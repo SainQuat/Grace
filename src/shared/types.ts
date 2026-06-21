@@ -16,6 +16,18 @@ export interface ChatRequestPayload {
   messages: ChatMessagePayload[]
 }
 
+export interface SetupAgentRequestPayload {
+  providerId?: string
+  modelId: string
+  messages: ChatMessagePayload[]
+}
+
+export interface SetupAgentResponse {
+  configured: boolean
+  modelId: string
+  content: string
+}
+
 export type ChatStreamEvent =
   | { type: 'delta'; requestId: string; text: string }
   | { type: 'done'; requestId: string }
