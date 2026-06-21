@@ -11,6 +11,7 @@ import {
   Image,
   Menu,
   Mic,
+  Moon,
   MoreHorizontal,
   PanelRight,
   Paperclip,
@@ -21,19 +22,21 @@ import {
   Send,
   Settings,
   Square,
+  Sun,
   ThumbsDown,
   ThumbsUp,
   Trash2,
   X,
   Zap
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ChatMessagePayload, ChatStreamEvent, CustomProviderSummary, ProviderModel } from '../../shared/types'
-import { createDraftTitle, formatBytes, uid } from './utils'
+import { createDraftTitle, formatBytes, groupModelsByProvider, uid } from './utils'
 
 type Role = 'user' | 'assistant'
+type ThemeMode = 'light' | 'dark'
 
 interface Message {
   id: string
@@ -152,7 +155,7 @@ function toCustomModelOptions(models: ProviderModel[], baseUrl: string): ModelOp
     modelId: model.id,
     label: model.label || model.id,
     provider: 'Custom',
-    description: model.ownedBy ? `Available from ${model.ownedBy}` : 'Available from custom provider.',
+    description: model.ownedBy ? `Owned by ${model.ownedBy}` : model.id,
     hint: baseUrl || 'OpenAI-compatible endpoint',
     providerKind: 'custom',
     supportsEffort: false
@@ -215,6 +218,7 @@ export function App(): JSX.Element {
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
   const [modelId, setModelId] = usePersistentState('grace.modelId', builtInModels[0].id)
   const [effort, setEffort] = usePersistentState<'low' | 'medium' | 'high'>('grace.effort', 'medium')
+  const [themeMode, setThemeMode] = usePersistentState<ThemeMode>('grace.themeMode', 'light')
   const [toolMenuOpen, setToolMenuOpen] = useState(false)
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const [providerSettingsOpen, setProviderSettingsOpen] = useState(false)
@@ -237,6 +241,11 @@ export function App(): JSX.Element {
   const selectedTools = tools.filter((tool) => selectedToolIds.includes(tool.id))
   const canSend = composerValue.trim().length > 0 || attachedFiles.length > 0
   const isStreaming = activeRequestId !== null
+  const nextThemeMode: ThemeMode = themeMode === 'dark' ? 'light' : 'dark'
+
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = themeMode
+  }, [themeMode])
 
   useEffect(() => {
     window.graceAI
@@ -461,11 +470,13 @@ export function App(): JSX.Element {
         <TopBar
           title={activeChat.title}
           model={selectedModel}
+          themeMode={themeMode}
           sidebarOpen={sidebarOpen}
           canvasOpen={canvasOpen}
           onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
           onToggleSidebar={() => setSidebarOpen((open) => !open)}
           onToggleCanvas={() => setCanvasOpen((open) => !open)}
+          onToggleTheme={() => setThemeMode(nextThemeMode)}
         />
 
         <ChatThread
@@ -524,7 +535,9 @@ export function App(): JSX.Element {
       {providerSettingsOpen ? (
         <ProviderSettingsModal
           provider={customProvider}
+          themeMode={themeMode}
           onClose={() => setProviderSettingsOpen(false)}
+          onThemeChange={setThemeMode}
           onSaved={(provider) => {
             setCustomProvider(provider)
             const firstCustomModel = provider.models[0]
@@ -674,12 +687,16 @@ function SidebarRow(props: { chat: Chat; active: boolean; onSelect: (chatId: str
 function TopBar(props: {
   title: string
   model: ModelOption
+  themeMode: ThemeMode
   sidebarOpen: boolean
   canvasOpen: boolean
   onOpenMobileSidebar: () => void
   onToggleSidebar: () => void
   onToggleCanvas: () => void
+  onToggleTheme: () => void
 }): JSX.Element {
+  const themeLabel = props.themeMode === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'
+
   return (
     <header className="topbar">
       <div className="topbar-left">
@@ -698,6 +715,9 @@ function TopBar(props: {
         <button className="text-button" type="button">
           <ShareIcon />
           Share
+        </button>
+        <button className="icon-button" type="button" aria-label={themeLabel} title={themeLabel} onClick={props.onToggleTheme}>
+          {props.themeMode === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
         </button>
         <button
           className={`icon-button ${props.canvasOpen ? 'active' : ''}`}
@@ -968,19 +988,31 @@ function ModelMenu(props: {
   onEffortChange: (effort: 'low' | 'medium' | 'high') => void
   onOpenProviderSettings: () => void
 }): JSX.Element {
+  const modelGroups = groupModelsByProvider(props.models)
+
   return (
     <div className="floating-menu model-menu" role="menu" aria-label="Model picker">
       <div className="menu-heading">Choose model</div>
-      {props.models.map((model) => (
-        <button key={model.id} className="model-row" type="button" onClick={() => props.onSelectModel(model)}>
-          <span>
-            <strong>{model.label}</strong>
-            <small>{model.provider} · {model.description}</small>
-            <em>{model.hint}</em>
-          </span>
-          {props.selectedModel.id === model.id ? <Check size={17} /> : null}
-        </button>
-      ))}
+      <div className="model-list-scroll">
+        {modelGroups.map((group) => (
+          <section className="model-group" key={group.id} aria-label={group.label}>
+            <div className="model-group-heading">
+              <strong>{group.label}</strong>
+              {group.detail ? <span>{group.detail}</span> : null}
+            </div>
+            {group.models.map((model) => (
+              <button key={model.id} className="model-row" type="button" role="menuitemradio" aria-checked={props.selectedModel.id === model.id} onClick={() => props.onSelectModel(model)}>
+                <span>
+                  <strong>{model.label}</strong>
+                  <small>{model.description}</small>
+                  {model.providerKind === 'custom' ? null : <em>{model.hint}</em>}
+                </span>
+                {props.selectedModel.id === model.id ? <Check size={17} /> : null}
+              </button>
+            ))}
+          </section>
+        ))}
+      </div>
       {props.selectedModel.supportsEffort ? (
         <div className="effort-control" aria-label="Reasoning effort">
           {(['low', 'medium', 'high'] as const).map((value) => (
@@ -1005,7 +1037,9 @@ function ModelMenu(props: {
 
 function ProviderSettingsModal(props: {
   provider: CustomProviderSummary
+  themeMode: ThemeMode
   onClose: () => void
+  onThemeChange: (themeMode: ThemeMode) => void
   onSaved: (provider: CustomProviderSummary) => void
 }): JSX.Element {
   const [baseUrl, setBaseUrl] = useState(props.provider.baseUrl || 'https://api.zed.md/v1')
@@ -1056,16 +1090,48 @@ function ProviderSettingsModal(props: {
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="provider-settings-title">
+      <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <header className="settings-header">
           <div>
-            <h2 id="provider-settings-title">Custom provider</h2>
-            <p>Connect any OpenAI-compatible endpoint. Models are loaded from `/models`.</p>
+            <h2 id="settings-title">Settings</h2>
+            <p>Manage appearance and custom provider access.</p>
           </div>
           <button className="icon-button" type="button" aria-label="Close settings" title="Close" onClick={props.onClose}>
             <X size={18} />
           </button>
         </header>
+
+        <section className="settings-section" aria-labelledby="appearance-settings-title">
+          <div>
+            <strong id="appearance-settings-title">Appearance</strong>
+            <p>Theme</p>
+          </div>
+          <div className="theme-segmented" role="group" aria-label="Theme">
+            <button
+              className={props.themeMode === 'light' ? 'active' : ''}
+              type="button"
+              aria-pressed={props.themeMode === 'light'}
+              onClick={() => props.onThemeChange('light')}
+            >
+              <Sun size={15} />
+              Light
+            </button>
+            <button
+              className={props.themeMode === 'dark' ? 'active' : ''}
+              type="button"
+              aria-pressed={props.themeMode === 'dark'}
+              onClick={() => props.onThemeChange('dark')}
+            >
+              <Moon size={15} />
+              Dark
+            </button>
+          </div>
+        </section>
+
+        <div className="settings-subheader">
+          <strong>Custom provider</strong>
+          <p>Connect any OpenAI-compatible endpoint. Models are loaded from `/models`.</p>
+        </div>
 
         <div className="settings-form">
           <label>
