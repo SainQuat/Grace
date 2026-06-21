@@ -10,12 +10,14 @@ import {
   Folder,
   History,
   Image,
+  Mail,
   Menu,
   Mic,
   Moon,
   MoreHorizontal,
   PanelRight,
   Paperclip,
+  Palette,
   Pencil,
   Pin,
   Plus,
@@ -28,6 +30,8 @@ import {
   ThumbsDown,
   ThumbsUp,
   Trash2,
+  UserPlus,
+  Users,
   X,
   Zap
 } from 'lucide-react'
@@ -55,6 +59,7 @@ interface Chat {
   title: string
   project?: string
   projectId?: string
+  spaceId?: string
   pinned?: boolean
   messages: Message[]
   updatedAt: string
@@ -65,6 +70,23 @@ interface Project {
   name: string
   icon: ProjectIconId
   color: string
+}
+
+interface SpaceMember {
+  id: string
+  name: string
+  email: string
+  role: 'owner' | 'member'
+  status: 'active' | 'invited'
+}
+
+interface Space {
+  id: string
+  name: string
+  icon: ProjectIconId
+  color: string
+  members: SpaceMember[]
+  createdAt: string
 }
 
 type ProjectIconId = 'folder' | 'bot' | 'book' | 'file' | 'image' | 'zap' | 'settings' | 'archive'
@@ -134,6 +156,32 @@ const projectColors = ['#5cc8b7', '#8b5cf6', '#f59e0b', '#ef4444', '#3b82f6', '#
 const initialProjects: Project[] = [
   { id: 'project-grace', name: 'Grace', icon: 'bot', color: '#5cc8b7' },
   { id: 'project-writing', name: 'Writing', icon: 'book', color: '#8b5cf6' }
+]
+
+const initialSpaces: Space[] = [
+  {
+    id: 'space-grace-team',
+    name: 'Grace Team',
+    icon: 'bot',
+    color: '#3b82f6',
+    createdAt: new Date(Date.now() - 1000 * 60 * 60 * 12).toISOString(),
+    members: [
+      {
+        id: 'member-owner',
+        name: 'You',
+        email: 'you@grace.local',
+        role: 'owner',
+        status: 'active'
+      },
+      {
+        id: 'member-demo-invite',
+        name: 'Friend',
+        email: 'friend@example.com',
+        role: 'member',
+        status: 'invited'
+      }
+    ]
+  }
 ]
 
 const tools: ToolOption[] = [
@@ -271,6 +319,20 @@ const initialChats: Chat[] = [
     messages: []
   },
   {
+    id: 'chat-shared-space',
+    title: 'Общий чат команды',
+    spaceId: 'space-grace-team',
+    updatedAt: new Date(Date.now() - 1000 * 60 * 48).toISOString(),
+    messages: [
+      {
+        id: 'shared-m1',
+        role: 'assistant',
+        content:
+          'Это общий чат внутри пространства. Пока приглашения хранятся локально, без отправки почты и без backend-синхронизации.'
+      }
+    ]
+  },
+  {
     id: 'chat-ui-copy',
     title: 'Улучшить onboarding copy',
     project: 'Writing',
@@ -298,15 +360,29 @@ function getProjectIcon(iconId: ProjectIconId): typeof Folder {
   return projectIconOptions.find((option) => option.id === iconId)?.icon ?? Folder
 }
 
-function getNextProjectIcon(iconId: ProjectIconId): ProjectIconId {
-  const currentIndex = projectIconOptions.findIndex((option) => option.id === iconId)
-  const nextOption = projectIconOptions[(currentIndex + 1) % projectIconOptions.length]
-  return nextOption.id
+function createOwnerMember(): SpaceMember {
+  return {
+    id: uid('member'),
+    name: 'You',
+    email: 'you@grace.local',
+    role: 'owner',
+    status: 'active'
+  }
 }
 
-function getNextProjectColor(color: string): string {
-  const currentIndex = projectColors.indexOf(color)
-  return projectColors[(currentIndex + 1) % projectColors.length]
+function createInvitedMember(email: string): SpaceMember {
+  const name = email.split('@')[0]?.trim() || 'Member'
+  return {
+    id: uid('member'),
+    name,
+    email,
+    role: 'member',
+    status: 'invited'
+  }
+}
+
+function getMemberLabel(count: number, translateFn: Translate): string {
+  return count === 1 ? translateFn('member') : translateFn('members')
 }
 
 export function App(): JSX.Element {
@@ -328,10 +404,12 @@ export function App(): JSX.Element {
     true
   )
   const [projects, setProjects] = usePersistentState<Project[]>('grace.projects', initialProjects)
+  const [spaces, setSpaces] = usePersistentState<Space[]>('grace.spaces', initialSpaces)
   const [activeProjectId, setActiveProjectId] = usePersistentState<string | null>(
     'grace.activeProjectId',
     null
   )
+  const [activeSpaceId, setActiveSpaceId] = usePersistentState<string | null>('grace.activeSpaceId', null)
   const [mcpServers, setMcpServers] = usePersistentState<McpServer[]>('grace.mcpServers', [])
   const [setupAgentOpen, setSetupAgentOpen] = useState(false)
   const [setupAgentMessages, setSetupAgentMessages] = usePersistentState<SetupAgentMessage[]>(
@@ -347,6 +425,8 @@ export function App(): JSX.Element {
   const [toolMenuOpen, setToolMenuOpen] = useState(false)
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const [providerSettingsOpen, setProviderSettingsOpen] = useState(false)
+  const [projectDialog, setProjectDialog] = useState<{ mode: 'create' | 'edit'; projectId?: string } | null>(null)
+  const [spaceDialog, setSpaceDialog] = useState<{ mode: 'create' | 'edit'; spaceId?: string } | null>(null)
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [providers, setProviders] = useState<CustomProviderSummary[]>(
     providerPresets.map((provider) => ({
@@ -377,12 +457,15 @@ export function App(): JSX.Element {
   const t: Translate = useMemo(() => (key) => translate(locale, key), [locale])
   const activeChat = chats.find((chat) => chat.id === activeChatId) ?? chats[0]
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null
+  const activeSpace = spaces.find((space) => space.id === activeSpaceId) ?? null
   const visibleChats = useMemo(
     () =>
-      activeProjectId
+      activeSpaceId
+        ? chats.filter((chat) => chat.spaceId === activeSpaceId)
+        : activeProjectId
         ? chats.filter((chat) => resolveChatProjectId(chat, projects) === activeProjectId)
         : chats,
-    [activeProjectId, chats, projects]
+    [activeProjectId, activeSpaceId, chats, projects]
   )
   const selectedModel = availableModels.find((model) => model.id === modelId) ?? availableModels[0]
   const selectedTools = tools.filter((tool) => selectedToolIds.includes(tool.id))
@@ -441,6 +524,12 @@ export function App(): JSX.Element {
   }, [activeProjectId, projects, setActiveProjectId])
 
   useEffect(() => {
+    if (activeSpaceId && !spaces.some((space) => space.id === activeSpaceId)) {
+      setActiveSpaceId(null)
+    }
+  }, [activeSpaceId, spaces, setActiveSpaceId])
+
+  useEffect(() => {
     setChats((currentChats) => {
       let changed = false
       const migratedChats = currentChats.map((chat) => {
@@ -467,6 +556,8 @@ export function App(): JSX.Element {
         setModelMenuOpen(false)
         setMobileSidebarOpen(false)
         setProviderSettingsOpen(false)
+        setProjectDialog(null)
+        setSpaceDialog(null)
         setSkillsOpen(false)
         setSetupAgentOpen(false)
       }
@@ -564,8 +655,9 @@ export function App(): JSX.Element {
     const chat: Chat = {
       id: uid('chat'),
       title: t('newChat'),
-      projectId: activeProjectId ?? undefined,
-      project: activeProject?.name,
+      projectId: activeSpaceId ? undefined : activeProjectId ?? undefined,
+      project: activeSpaceId ? undefined : activeProject?.name,
+      spaceId: activeSpaceId ?? undefined,
       messages: [],
       updatedAt: new Date().toISOString()
     }
@@ -634,6 +726,7 @@ export function App(): JSX.Element {
 
   function selectProject(projectId: string | null): void {
     setActiveProjectId(projectId)
+    setActiveSpaceId(null)
     const nextVisibleChats = projectId
       ? chats.filter((chat) => resolveChatProjectId(chat, projects) === projectId)
       : chats
@@ -651,56 +744,17 @@ export function App(): JSX.Element {
     if (!chat) return
 
     setActiveChatId(chatId)
-    setActiveProjectId(resolveChatProjectId(chat, projects) ?? null)
+    setActiveSpaceId(chat.spaceId ?? null)
+    setActiveProjectId(chat.spaceId ? null : resolveChatProjectId(chat, projects) ?? null)
     setMobileSidebarOpen(false)
   }
 
   function createProject(): void {
-    const name = window.prompt(t('newProject'))?.trim()
-    if (!name) return
-
-    const project: Project = {
-      id: uid('project'),
-      name,
-      icon: 'folder',
-      color: projectColors[projects.length % projectColors.length]
-    }
-
-    setProjects((currentProjects) => [...currentProjects, project])
-    setActiveProjectId(project.id)
+    setProjectDialog({ mode: 'create' })
   }
 
   function renameProject(projectId: string): void {
-    const project = projects.find((candidate) => candidate.id === projectId)
-    if (!project) return
-
-    const name = window.prompt(t('renameProject'), project.name)?.trim()
-    if (!name) return
-
-    setProjects((currentProjects) =>
-      currentProjects.map((candidate) => (candidate.id === projectId ? { ...candidate, name } : candidate))
-    )
-    setChats((currentChats) =>
-      currentChats.map((chat) =>
-        resolveChatProjectId(chat, projects) === projectId ? { ...chat, project: name } : chat
-      )
-    )
-  }
-
-  function cycleProjectIcon(projectId: string): void {
-    setProjects((currentProjects) =>
-      currentProjects.map((project) =>
-        project.id === projectId ? { ...project, icon: getNextProjectIcon(project.icon) } : project
-      )
-    )
-  }
-
-  function cycleProjectColor(projectId: string): void {
-    setProjects((currentProjects) =>
-      currentProjects.map((project) =>
-        project.id === projectId ? { ...project, color: getNextProjectColor(project.color) } : project
-      )
-    )
+    setProjectDialog({ mode: 'edit', projectId })
   }
 
   function moveChatToProject(chatId: string, projectId: string | null): void {
@@ -712,6 +766,7 @@ export function App(): JSX.Element {
               ...chat,
               projectId: project?.id,
               project: project?.name,
+              spaceId: undefined,
               updatedAt: new Date().toISOString()
             }
           : chat
@@ -719,6 +774,152 @@ export function App(): JSX.Element {
     )
     if (chatId === activeChatId) {
       setActiveProjectId(project?.id ?? null)
+      setActiveSpaceId(null)
+    }
+  }
+
+  function saveProjectDraft(draft: { name: string; icon: ProjectIconId; color: string; projectId?: string }): void {
+    if (!draft.name.trim()) return
+
+    if (draft.projectId) {
+      setProjects((currentProjects) =>
+        currentProjects.map((project) =>
+          project.id === draft.projectId
+            ? {
+                ...project,
+                name: draft.name.trim(),
+                icon: draft.icon,
+                color: draft.color
+              }
+            : project
+        )
+      )
+      setChats((currentChats) =>
+        currentChats.map((chat) =>
+          resolveChatProjectId(chat, projects) === draft.projectId ? { ...chat, project: draft.name.trim() } : chat
+        )
+      )
+      setProjectDialog(null)
+      return
+    }
+
+    const project: Project = {
+      id: uid('project'),
+      name: draft.name.trim(),
+      icon: draft.icon,
+      color: draft.color
+    }
+    const chat: Chat = {
+      id: uid('chat'),
+      title: draft.name.trim(),
+      projectId: project.id,
+      project: project.name,
+      messages: [],
+      updatedAt: new Date().toISOString()
+    }
+
+    setProjects((currentProjects) => [...currentProjects, project])
+    setChats((currentChats) => [chat, ...currentChats])
+    setActiveProjectId(project.id)
+    setActiveSpaceId(null)
+    setActiveChatId(chat.id)
+    setProjectDialog(null)
+  }
+
+  function createSpace(): void {
+    setSpaceDialog({ mode: 'create' })
+  }
+
+  function selectSpace(spaceId: string): void {
+    setActiveSpaceId(spaceId)
+    setActiveProjectId(null)
+    const nextVisibleChats = chats.filter((chat) => chat.spaceId === spaceId)
+    const activeChatStillVisible = nextVisibleChats.some((chat) => chat.id === activeChatId)
+
+    if (!activeChatStillVisible && nextVisibleChats[0]) {
+      setActiveChatId(nextVisibleChats[0].id)
+    }
+
+    setMobileSidebarOpen(false)
+  }
+
+  function editSpace(spaceId: string): void {
+    setSpaceDialog({ mode: 'edit', spaceId })
+  }
+
+  function saveSpaceDraft(draft: {
+    name: string
+    icon: ProjectIconId
+    color: string
+    members: SpaceMember[]
+    spaceId?: string
+  }): void {
+    if (!draft.name.trim()) return
+
+    if (draft.spaceId) {
+      setSpaces((currentSpaces) =>
+        currentSpaces.map((space) =>
+          space.id === draft.spaceId
+            ? {
+                ...space,
+                name: draft.name.trim(),
+                icon: draft.icon,
+                color: draft.color,
+                members: draft.members
+              }
+            : space
+        )
+      )
+      setSpaceDialog(null)
+      return
+    }
+
+    const spaceId = uid('space')
+    const space: Space = {
+      id: spaceId,
+      name: draft.name.trim(),
+      icon: draft.icon,
+      color: draft.color,
+      members: draft.members.length > 0 ? draft.members : [createOwnerMember()],
+      createdAt: new Date().toISOString()
+    }
+    const chat: Chat = {
+      id: uid('chat'),
+      title: draft.name.trim(),
+      spaceId,
+      messages: [],
+      updatedAt: new Date().toISOString()
+    }
+
+    setSpaces((currentSpaces) => [...currentSpaces, space])
+    setChats((currentChats) => [chat, ...currentChats])
+    setActiveSpaceId(space.id)
+    setActiveProjectId(null)
+    setActiveChatId(chat.id)
+    setSpaceDialog(null)
+  }
+
+  function moveChatToSpace(chatId: string, spaceId: string): void {
+    const space = spaces.find((candidate) => candidate.id === spaceId)
+    if (!space) return
+
+    setChats((currentChats) =>
+      currentChats.map((chat) =>
+        chat.id === chatId
+          ? {
+              ...chat,
+              projectId: undefined,
+              project: undefined,
+              spaceId: space.id,
+              updatedAt: new Date().toISOString()
+            }
+          : chat
+      )
+    )
+
+    if (chatId === activeChatId) {
+      setActiveSpaceId(space.id)
+      setActiveProjectId(null)
     }
   }
 
@@ -961,7 +1162,9 @@ export function App(): JSX.Element {
         chats={visibleChats}
         allChats={chats}
         projects={projects}
+        spaces={spaces}
         activeProjectId={activeProjectId}
+        activeSpaceId={activeSpaceId}
         activeChatId={activeChat.id}
         open={sidebarOpen}
         mobileOpen={mobileSidebarOpen}
@@ -970,11 +1173,13 @@ export function App(): JSX.Element {
         onMobileClose={() => setMobileSidebarOpen(false)}
         onNewChat={createNewChat}
         onNewProject={createProject}
+        onNewSpace={createSpace}
         onSelectProject={selectProject}
+        onSelectSpace={selectSpace}
         onRenameProject={renameProject}
-        onCycleProjectIcon={cycleProjectIcon}
-        onCycleProjectColor={cycleProjectColor}
+        onEditSpace={editSpace}
         onMoveChatToProject={moveChatToProject}
+        onMoveChatToSpace={moveChatToSpace}
         onToggleChatPinned={toggleChatPinned}
         onRenameChat={renameChat}
         onDeleteChat={deleteChat}
@@ -989,6 +1194,7 @@ export function App(): JSX.Element {
         <TopBar
           title={activeChat.title}
           project={activeProject}
+          space={activeSpace}
           model={selectedModel}
           themeMode={themeMode}
           translate={t}
@@ -1082,6 +1288,26 @@ export function App(): JSX.Element {
           }}
         />
       ) : null}
+      {projectDialog ? (
+        <ProjectDialog
+          mode={projectDialog.mode}
+          project={projectDialog.projectId ? projects.find((project) => project.id === projectDialog.projectId) : undefined}
+          projectIndex={projects.length}
+          translate={t}
+          onClose={() => setProjectDialog(null)}
+          onSave={saveProjectDraft}
+        />
+      ) : null}
+      {spaceDialog ? (
+        <SpaceDialog
+          mode={spaceDialog.mode}
+          space={spaceDialog.spaceId ? spaces.find((space) => space.id === spaceDialog.spaceId) : undefined}
+          spaceIndex={spaces.length}
+          translate={t}
+          onClose={() => setSpaceDialog(null)}
+          onSave={saveSpaceDraft}
+        />
+      ) : null}
       {setupAgentOpen ? (
         <SetupAgentModal
           messages={setupAgentMessages}
@@ -1112,7 +1338,9 @@ function ProjectSidebar(props: {
   chats: Chat[]
   allChats: Chat[]
   projects: Project[]
+  spaces: Space[]
   activeProjectId: string | null
+  activeSpaceId: string | null
   activeChatId: string
   open: boolean
   mobileOpen: boolean
@@ -1121,11 +1349,13 @@ function ProjectSidebar(props: {
   onMobileClose: () => void
   onNewChat: () => void
   onNewProject: () => void
+  onNewSpace: () => void
   onSelectProject: (projectId: string | null) => void
+  onSelectSpace: (spaceId: string) => void
   onRenameProject: (projectId: string) => void
-  onCycleProjectIcon: (projectId: string) => void
-  onCycleProjectColor: (projectId: string) => void
+  onEditSpace: (spaceId: string) => void
   onMoveChatToProject: (chatId: string, projectId: string | null) => void
+  onMoveChatToSpace: (chatId: string, spaceId: string) => void
   onSelectChat: (chatId: string) => void
   onToggleChatPinned: (chatId: string) => void
   onRenameChat: (chatId: string) => void
@@ -1194,8 +1424,7 @@ function ProjectSidebar(props: {
                   translate={t}
                   onSelect={props.onSelectProject}
                   onRename={props.onRenameProject}
-                  onCycleIcon={props.onCycleProjectIcon}
-                  onCycleColor={props.onCycleProjectColor}
+                  onEdit={props.onRenameProject}
                 />
               ))}
               <button className="sidebar-row muted-row" type="button" onClick={props.onNewProject}>
@@ -1204,16 +1433,39 @@ function ProjectSidebar(props: {
               </button>
             </SidebarSection>
 
-            <SidebarSection title={props.activeProjectId ? t('projectChats') : t('recents')} icon={<History size={14} />}>
+            <SidebarSection title={t('spaces')} icon={<Users size={14} />}>
+              {props.spaces.map((space) => (
+                <SpaceRow
+                  key={space.id}
+                  space={space}
+                  active={space.id === props.activeSpaceId}
+                  chatCount={props.allChats.filter((chat) => chat.spaceId === space.id).length}
+                  translate={t}
+                  onSelect={props.onSelectSpace}
+                  onEdit={props.onEditSpace}
+                />
+              ))}
+              <button className="sidebar-row muted-row" type="button" onClick={props.onNewSpace}>
+                <Plus size={15} />
+                <span>{t('newSpace')}</span>
+              </button>
+            </SidebarSection>
+
+            <SidebarSection
+              title={props.activeSpaceId ? t('spaceChats') : props.activeProjectId ? t('projectChats') : t('recents')}
+              icon={<History size={14} />}
+            >
               {recentChats.map((chat) => (
                 <SidebarRow
                   key={chat.id}
                   chat={chat}
                   active={chat.id === props.activeChatId}
                   projects={props.projects}
+                  spaces={props.spaces}
                   translate={t}
                   onSelect={props.onSelectChat}
                   onMoveToProject={props.onMoveChatToProject}
+                  onMoveToSpace={props.onMoveChatToSpace}
                   onTogglePinned={props.onToggleChatPinned}
                   onRename={props.onRenameChat}
                   onDelete={props.onDeleteChat}
@@ -1291,8 +1543,7 @@ function ProjectRow(props: {
   translate: Translate
   onSelect: (projectId: string) => void
   onRename: (projectId: string) => void
-  onCycleIcon: (projectId: string) => void
-  onCycleColor: (projectId: string) => void
+  onEdit: (projectId: string) => void
 }): JSX.Element {
   const [actionsOpen, setActionsOpen] = useState(false)
   const shellRef = useCloseOnOutsideClick<HTMLDivElement>(actionsOpen, () => setActionsOpen(false))
@@ -1331,7 +1582,7 @@ function ProjectRow(props: {
           <button
             type="button"
             onClick={() => {
-              props.onCycleIcon(props.project.id)
+              props.onEdit(props.project.id)
               setActionsOpen(false)
             }}
           >
@@ -1341,7 +1592,7 @@ function ProjectRow(props: {
           <button
             type="button"
             onClick={() => {
-              props.onCycleColor(props.project.id)
+              props.onEdit(props.project.id)
               setActionsOpen(false)
             }}
           >
@@ -1354,13 +1605,70 @@ function ProjectRow(props: {
   )
 }
 
+function SpaceRow(props: {
+  space: Space
+  active: boolean
+  chatCount: number
+  translate: Translate
+  onSelect: (spaceId: string) => void
+  onEdit: (spaceId: string) => void
+}): JSX.Element {
+  const [actionsOpen, setActionsOpen] = useState(false)
+  const shellRef = useCloseOnOutsideClick<HTMLDivElement>(actionsOpen, () => setActionsOpen(false))
+  const Icon = getProjectIcon(props.space.icon)
+  const invitedCount = props.space.members.filter((member) => member.status === 'invited').length
+
+  return (
+    <div ref={shellRef} className={`sidebar-row-shell project-row-shell ${props.active ? 'active' : ''}`}>
+      <button className="sidebar-row-main project-row-main" type="button" onClick={() => props.onSelect(props.space.id)}>
+        <span className="project-icon-dot" style={{ color: props.space.color, backgroundColor: `${props.space.color}22` }}>
+          <Icon size={15} />
+        </span>
+        <span>
+          {props.space.name}
+          <small>
+            {props.space.members.length} {getMemberLabel(props.space.members.length, props.translate)}
+            {invitedCount > 0 ? ` · ${invitedCount} ${props.translate('invited')}` : ''}
+          </small>
+        </span>
+        <small>{props.chatCount}</small>
+      </button>
+      <button
+        className="row-action-button"
+        type="button"
+        aria-label={props.translate('editSpace')}
+        title={props.translate('editSpace')}
+        onClick={() => setActionsOpen((open) => !open)}
+      >
+        <MoreHorizontal size={15} />
+      </button>
+      {actionsOpen ? (
+        <div className="row-action-menu project-action-menu">
+          <button
+            type="button"
+            onClick={() => {
+              props.onEdit(props.space.id)
+              setActionsOpen(false)
+            }}
+          >
+            <Users size={14} />
+            {props.translate('editSpace')}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function SidebarRow(props: {
   chat: Chat
   active: boolean
   projects?: Project[]
+  spaces?: Space[]
   translate?: Translate
   onSelect: (chatId: string) => void
   onMoveToProject?: (chatId: string, projectId: string | null) => void
+  onMoveToSpace?: (chatId: string, spaceId: string) => void
   onTogglePinned: (chatId: string) => void
   onRename: (chatId: string) => void
   onDelete: (chatId: string) => void
@@ -1370,6 +1678,7 @@ function SidebarRow(props: {
   const fallbackTranslate: Translate = (key) => translate('en', key)
   const t = props.translate ?? fallbackTranslate
   const projects = props.projects ?? []
+  const spaces = props.spaces ?? []
 
   return (
     <div ref={shellRef} className={`sidebar-row-shell ${props.active ? 'active' : ''}`}>
@@ -1429,6 +1738,27 @@ function SidebarRow(props: {
               </button>
             </>
           ) : null}
+          {spaces.length > 0 ? (
+            <>
+              <div className="row-action-label">{t('moveToSpace')}</div>
+              {spaces.map((space) => {
+                const Icon = getProjectIcon(space.icon)
+                return (
+                  <button
+                    key={space.id}
+                    type="button"
+                    onClick={() => {
+                      props.onMoveToSpace?.(props.chat.id, space.id)
+                      setActionsOpen(false)
+                    }}
+                  >
+                    <Icon size={14} />
+                    {space.name}
+                  </button>
+                )
+              })}
+            </>
+          ) : null}
           <button
             type="button"
             onClick={() => {
@@ -1458,6 +1788,7 @@ function SidebarRow(props: {
 function TopBar(props: {
   title: string
   project: Project | null
+  space: Space | null
   model: ModelOption
   themeMode: ThemeMode
   translate: Translate
@@ -1481,7 +1812,13 @@ function TopBar(props: {
         </button>
         <div className="title-block">
           <strong>{props.title}</strong>
-          <span>{props.project ? `${props.project.name} · ${props.model.label}` : props.model.label}</span>
+          <span>
+            {props.space
+              ? `${props.space.name} · ${props.space.members.length} ${getMemberLabel(props.space.members.length, props.translate)} · ${props.model.label}`
+              : props.project
+              ? `${props.project.name} · ${props.model.label}`
+              : props.model.label}
+          </span>
         </div>
       </div>
       <div className="topbar-actions">
@@ -1834,6 +2171,221 @@ function ModelMenu(props: {
         <Settings size={16} />
         {props.translate('providerSettings')}
       </button>
+    </div>
+  )
+}
+
+function ProjectDialog(props: {
+  mode: 'create' | 'edit'
+  project?: Project
+  projectIndex: number
+  translate: Translate
+  onClose: () => void
+  onSave: (draft: { name: string; icon: ProjectIconId; color: string; projectId?: string }) => void
+}): JSX.Element {
+  const [name, setName] = useState(props.project?.name ?? '')
+  const [icon, setIcon] = useState<ProjectIconId>(props.project?.icon ?? 'folder')
+  const [color, setColor] = useState(props.project?.color ?? projectColors[props.projectIndex % projectColors.length])
+  const title = props.mode === 'create' ? props.translate('createProject') : props.translate('editProject')
+
+  function onSubmit(event: React.FormEvent<HTMLFormElement>): void {
+    event.preventDefault()
+    props.onSave({ name, icon, color, projectId: props.project?.id })
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="settings-modal picker-modal" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title">
+        <header className="settings-header">
+          <div>
+            <h2 id="project-dialog-title">{title}</h2>
+            <p>{props.translate('projectDetails')}</p>
+          </div>
+          <button className="icon-button" type="button" aria-label={props.translate('close')} title={props.translate('close')} onClick={props.onClose}>
+            <X size={18} />
+          </button>
+        </header>
+
+        <form className="settings-form" onSubmit={onSubmit}>
+          <label>
+            <span>{props.translate('projectName')}</span>
+            <input value={name} autoFocus onChange={(event) => setName(event.target.value)} />
+          </label>
+
+          <PickerSection title={props.translate('chooseIcon')} icon={<Folder size={15} />}>
+            <IconPicker value={icon} color={color} onChange={setIcon} />
+          </PickerSection>
+
+          <PickerSection title={props.translate('chooseColor')} icon={<Palette size={15} />}>
+            <ColorPicker value={color} onChange={setColor} />
+          </PickerSection>
+
+          <div className="settings-actions">
+            <button className="secondary-button" type="button" onClick={props.onClose}>
+              {props.translate('cancel')}
+            </button>
+            <button className="primary-button" type="submit" disabled={!name.trim()}>
+              {props.mode === 'create' ? props.translate('create') : props.translate('saveChanges')}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  )
+}
+
+function SpaceDialog(props: {
+  mode: 'create' | 'edit'
+  space?: Space
+  spaceIndex: number
+  translate: Translate
+  onClose: () => void
+  onSave: (draft: {
+    name: string
+    icon: ProjectIconId
+    color: string
+    members: SpaceMember[]
+    spaceId?: string
+  }) => void
+}): JSX.Element {
+  const [name, setName] = useState(props.space?.name ?? '')
+  const [icon, setIcon] = useState<ProjectIconId>(props.space?.icon ?? 'bot')
+  const [color, setColor] = useState(props.space?.color ?? projectColors[(props.spaceIndex + 2) % projectColors.length])
+  const [members, setMembers] = useState<SpaceMember[]>(props.space?.members ?? [createOwnerMember()])
+  const [inviteEmail, setInviteEmail] = useState('')
+  const title = props.mode === 'create' ? props.translate('createSpace') : props.translate('editSpace')
+
+  function onSubmit(event: React.FormEvent<HTMLFormElement>): void {
+    event.preventDefault()
+    props.onSave({ name, icon, color, members, spaceId: props.space?.id })
+  }
+
+  function addInvite(): void {
+    const email = inviteEmail.trim().toLowerCase()
+    if (!email || members.some((member) => member.email.toLowerCase() === email)) return
+
+    setMembers((currentMembers) => [...currentMembers, createInvitedMember(email)])
+    setInviteEmail('')
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="settings-modal picker-modal" role="dialog" aria-modal="true" aria-labelledby="space-dialog-title">
+        <header className="settings-header">
+          <div>
+            <h2 id="space-dialog-title">{title}</h2>
+            <p>{props.translate('spaceDetails')}</p>
+          </div>
+          <button className="icon-button" type="button" aria-label={props.translate('close')} title={props.translate('close')} onClick={props.onClose}>
+            <X size={18} />
+          </button>
+        </header>
+
+        <form className="settings-form" onSubmit={onSubmit}>
+          <label>
+            <span>{props.translate('spaceName')}</span>
+            <input value={name} autoFocus onChange={(event) => setName(event.target.value)} />
+          </label>
+
+          <PickerSection title={props.translate('chooseIcon')} icon={<Users size={15} />}>
+            <IconPicker value={icon} color={color} onChange={setIcon} />
+          </PickerSection>
+
+          <PickerSection title={props.translate('chooseColor')} icon={<Palette size={15} />}>
+            <ColorPicker value={color} onChange={setColor} />
+          </PickerSection>
+
+          <PickerSection title={props.translate('spaceMembers')} icon={<UserPlus size={15} />}>
+            <div className="invite-row">
+              <Mail size={15} />
+              <input
+                value={inviteEmail}
+                type="email"
+                placeholder={props.translate('inviteEmailPlaceholder')}
+                onChange={(event) => setInviteEmail(event.target.value)}
+              />
+              <button className="secondary-button" type="button" onClick={addInvite}>
+                {props.translate('addInvite')}
+              </button>
+            </div>
+            <p className="muted-copy">{props.translate('spaceInviteHelp')}</p>
+            <div className="member-list">
+              {members.map((member) => (
+                <div className="member-card" key={member.id}>
+                  <div>
+                    <strong>{member.name}</strong>
+                    <span>{member.email}</span>
+                  </div>
+                  <span className={`status-pill ${member.status}`}>{props.translate(member.status)}</span>
+                </div>
+              ))}
+            </div>
+          </PickerSection>
+
+          <div className="settings-actions">
+            <button className="secondary-button" type="button" onClick={props.onClose}>
+              {props.translate('cancel')}
+            </button>
+            <button className="primary-button" type="submit" disabled={!name.trim()}>
+              {props.mode === 'create' ? props.translate('create') : props.translate('saveChanges')}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  )
+}
+
+function PickerSection(props: { title: string; icon: JSX.Element; children: React.ReactNode }): JSX.Element {
+  return (
+    <section className="picker-section">
+      <div className="picker-section-title">
+        {props.icon}
+        <strong>{props.title}</strong>
+      </div>
+      {props.children}
+    </section>
+  )
+}
+
+function IconPicker(props: { value: ProjectIconId; color: string; onChange: (icon: ProjectIconId) => void }): JSX.Element {
+  return (
+    <div className="icon-picker-grid">
+      {projectIconOptions.map((option) => {
+        const Icon = option.icon
+        return (
+          <button
+            key={option.id}
+            className={`icon-picker-option ${props.value === option.id ? 'active' : ''}`}
+            type="button"
+            title={option.label}
+            aria-label={option.label}
+            onClick={() => props.onChange(option.id)}
+          >
+            <span style={{ color: props.color, backgroundColor: `${props.color}22` }}>
+              <Icon size={18} />
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function ColorPicker(props: { value: string; onChange: (color: string) => void }): JSX.Element {
+  return (
+    <div className="color-picker-grid">
+      {projectColors.map((color) => (
+        <button
+          key={color}
+          className={`color-picker-option ${props.value === color ? 'active' : ''}`}
+          type="button"
+          aria-label={color}
+          onClick={() => props.onChange(color)}
+        >
+          <span style={{ backgroundColor: color }} />
+        </button>
+      ))}
     </div>
   )
 }

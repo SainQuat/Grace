@@ -1,6 +1,6 @@
 {
   "name": "grace",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "Local-first desktop AI chat client.",
   "author": "Igor Barchuk",
