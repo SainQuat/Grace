@@ -16,13 +16,12 @@ permissions:
 
 jobs:
   github-release:
-    name: GitHub Release
-    runs-on: ubuntu-latest
+    name: GitHub Release with macOS DMG
+    runs-on: macos-latest
     steps:
-      - name: Create GitHub release
+      - name: Resolve tag
+        id: tag
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
           INPUT_TAG: ${{ inputs.tag }}
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
@@ -42,7 +41,47 @@ jobs:
               ;;
           esac
 
-          gh release create "$tag" \
-            --verify-tag \
-            --generate-notes \
-            --title "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build macOS DMG
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist:mac
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          artifacts=(release/*.dmg)
+          if [ "${#artifacts[@]}" -eq 0 ]; then
+            echo "No DMG artifacts found in release/." >&2
+            exit 1
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${artifacts[@]}" --clobber
+          else
+            gh release create "$TAG" "${artifacts[@]}" \
+              --verify-tag \
+              --generate-notes \
+              --title "$TAG"
+          fi

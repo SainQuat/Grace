@@ -20,6 +20,7 @@ Grace is a local-first desktop AI chat app.
 - Custom provider credentials: stored by the Electron main process with `safeStorage`; API keys are not returned to the renderer.
 - Styling: plain CSS with design tokens.
 - Testing: Vitest for focused logic tests, TypeScript build for compile checks.
+- Packaging: `electron-builder` produces unsigned macOS `.dmg` installers with the app icon from `resources/icon.icns`.
 
 ## Application shape
 
@@ -38,3 +39,4 @@ Keep provider-specific code behind a small interface so model vendors can change
 
 - No cloud provider is hardcoded.
 - No production secrets belong in git.
+- No Apple Developer ID signing or notarization is configured yet.

@@ -9,11 +9,12 @@
 # Dependencies and build output
 node_modules/
 dist/
-build/
+release/
 .next/
 out/
 coverage/
 *.tsbuildinfo
+resources/*.iconset/
 
 # Logs
 *.log
