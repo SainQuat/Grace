@@ -1,0 +1,46 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Deployment environment
+        type: choice
+        required: true
+        default: staging
+        options:
+          - staging
+          - production
+  push:
+    branches:
+      - main
+  release:
+    types:
+      - published
+
+concurrency:
+  group: deploy-${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event_name == 'release' && 'production' || 'staging' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event_name == 'release' && 'production' || 'staging' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+
+      - name: Deploy
+        env:
+          APP_ENV: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event_name == 'release' && 'production' || 'staging' }}
+          DEPLOY_WEBHOOK_URL: ${{ secrets.DEPLOY_WEBHOOK_URL }}
+          GITHUB_DEPLOY_REF: ${{ github.ref }}
+          GITHUB_DEPLOY_SHA: ${{ github.sha }}
+        run: ./scripts/deploy.sh
