@@ -108,6 +108,10 @@ input:focus-visible {
   transition: width 180ms ease-out, transform 180ms ease-out;
 }
 
+:root[data-platform="darwin"] .sidebar {
+  padding-top: 46px;
+}
+
 .sidebar.collapsed {
   width: 60px;
 }
@@ -342,6 +346,12 @@ input:focus-visible {
   color: var(--muted);
 }
 
+.primary-nav-row {
+  margin: 2px 0 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
 .project-row-main {
   grid-template-columns: auto minmax(0, 1fr) auto;
 }
@@ -438,11 +448,19 @@ input:focus-visible {
   height: 100vh;
 }
 
+:root[data-platform="darwin"] .main-pane {
+  grid-template-rows: 68px minmax(0, 1fr) auto;
+}
+
 .topbar {
   justify-content: space-between;
   gap: 12px;
   padding: 10px 18px;
   border-bottom: 1px solid transparent;
+}
+
+:root[data-platform="darwin"] .topbar {
+  padding-top: 18px;
 }
 
 .topbar-left,
