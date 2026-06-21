@@ -2,10 +2,13 @@ import {
   Archive,
   BookOpen,
   Bot,
+  Code2,
   Check,
   ChevronDown,
+  ChevronRight,
   Clock3,
   Copy,
+  Eye,
   FileText,
   Folder,
   History,
@@ -45,6 +48,8 @@ import { createSetupAgentPlan } from './setupAgent'
 import {
   createDraftTitle,
   createNotificationBody,
+  detectCodeIntent,
+  extractFirstCodeBlock,
   filterModelsByQuery,
   filterSkillsByQuery,
   formatBytes,
@@ -55,6 +60,7 @@ import {
 
 type Role = 'user' | 'assistant'
 type ThemeMode = 'light' | 'dark'
+type RightPanelMode = 'canvas' | 'library' | 'tasks' | 'code'
 
 interface Message {
   id: string
@@ -123,6 +129,29 @@ interface AttachedFile {
   name: string
   size: number
   status: 'ready' | 'uploading' | 'error'
+}
+
+interface LibraryFile {
+  id: string
+  name: string
+  size: number
+  addedAt: string
+}
+
+interface ScheduledTask {
+  id: string
+  title: string
+  schedule: string
+  done: boolean
+  createdAt: string
+}
+
+interface CodeWorkspace {
+  content: string
+  language: string
+  selectedText: string
+  instruction: string
+  sourceRequestId?: string
 }
 
 interface ToolOption {
@@ -360,6 +389,23 @@ const canvasInitialValue = `# Рабочий черновик
 - Экспортируйте или копируйте текст, когда черновик готов.
 - Держите чат открытым, пока дорабатываете документ.`
 
+const initialScheduledTasks: ScheduledTask[] = [
+  {
+    id: 'task-release-check',
+    title: 'Проверить релиз перед публикацией',
+    schedule: 'Перед каждым tag v*',
+    done: false,
+    createdAt: new Date(Date.now() - 1000 * 60 * 45).toISOString()
+  }
+]
+
+const initialCodeWorkspace: CodeWorkspace = {
+  content: '',
+  language: 'text',
+  selectedText: '',
+  instruction: ''
+}
+
 function resolveChatProjectId(chat: Chat, projects: Project[]): string | undefined {
   if (chat.projectId) return chat.projectId
   if (!chat.project) return undefined
@@ -407,13 +453,57 @@ function createSkillContext(skill: SkillSummary): string {
   ].join('\n')
 }
 
+function getCodeWorkspaceFromAssistantContent(content: string, current: CodeWorkspace): CodeWorkspace {
+  const extracted = extractFirstCodeBlock(content)
+
+  if (!extracted) {
+    return {
+      ...current,
+      content,
+      language: current.language === 'text' ? 'text' : current.language
+    }
+  }
+
+  return {
+    ...current,
+    content: extracted.code,
+    language: extracted.language || 'text'
+  }
+}
+
+function createCodeRevisionPrompt(code: string, selectedText: string, instruction: string): string {
+  const target = selectedText.trim() ? selectedText.trim() : code.trim()
+  const scope = selectedText.trim() ? 'выделенный фрагмент' : 'весь текущий код'
+
+  return [
+    `Доработай ${scope}.`,
+    `Правка: ${instruction.trim() || 'улучши код по контексту чата'}`,
+    '',
+    'Верни обновленный код в одном fenced code block.',
+    '',
+    '```',
+    target,
+    '```'
+  ].join('\n')
+}
+
 export function App(): JSX.Element {
   const [chats, setChats] = usePersistentState<Chat[]>('grace.chats', initialChats)
   const [activeChatId, setActiveChatId] = usePersistentState<string>('grace.activeChatId', initialChats[0].id)
   const [sidebarOpen, setSidebarOpen] = usePersistentState('grace.sidebarOpen', true)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [canvasOpen, setCanvasOpen] = usePersistentState('grace.canvasOpen', true)
+  const [rightPanelMode, setRightPanelMode] = usePersistentState<RightPanelMode>('grace.rightPanelMode', 'canvas')
   const [canvasValue, setCanvasValue] = usePersistentState('grace.canvasValue', canvasInitialValue)
+  const [libraryFiles, setLibraryFiles] = usePersistentState<LibraryFile[]>('grace.libraryFiles', [])
+  const [scheduledTasks, setScheduledTasks] = usePersistentState<ScheduledTask[]>(
+    'grace.scheduledTasks',
+    initialScheduledTasks
+  )
+  const [codeWorkspace, setCodeWorkspace] = usePersistentState<CodeWorkspace>(
+    'grace.codeWorkspace',
+    initialCodeWorkspace
+  )
   const [composerValue, setComposerValue] = useState('')
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null)
   const [selectedToolIds, setSelectedToolIds] = useState<string[]>([])
@@ -428,6 +518,8 @@ export function App(): JSX.Element {
   )
   const [projects, setProjects] = usePersistentState<Project[]>('grace.projects', initialProjects)
   const [spaces, setSpaces] = usePersistentState<Space[]>('grace.spaces', initialSpaces)
+  const [projectsCollapsed, setProjectsCollapsed] = usePersistentState('grace.projectsCollapsed', false)
+  const [spacesCollapsed, setSpacesCollapsed] = usePersistentState('grace.spacesCollapsed', false)
   const [activeProjectId, setActiveProjectId] = usePersistentState<string | null>(
     'grace.activeProjectId',
     null
@@ -602,6 +694,12 @@ export function App(): JSX.Element {
 
     if (event.type === 'delta') {
       responseContentRef.current[event.requestId] = `${responseContentRef.current[event.requestId] ?? ''}${event.text}`
+      const nextResponseContent = responseContentRef.current[event.requestId]
+      setCodeWorkspace((currentWorkspace) =>
+        currentWorkspace.sourceRequestId === event.requestId
+          ? getCodeWorkspaceFromAssistantContent(nextResponseContent, currentWorkspace)
+          : currentWorkspace
+      )
       setChats((currentChats) =>
         currentChats.map((chat) =>
           chat.id === targetChatId
@@ -634,6 +732,9 @@ export function App(): JSX.Element {
         )
       )
       setActiveRequestId((current) => (current === event.requestId ? null : current))
+      setCodeWorkspace((currentWorkspace) =>
+        currentWorkspace.sourceRequestId === event.requestId ? { ...currentWorkspace, sourceRequestId: undefined } : currentWorkspace
+      )
       delete requestChatRef.current[event.requestId]
       delete responseContentRef.current[event.requestId]
       stoppedRequestRef.current.delete(event.requestId)
@@ -655,6 +756,9 @@ export function App(): JSX.Element {
       )
     )
     setActiveRequestId(null)
+    setCodeWorkspace((currentWorkspace) =>
+      currentWorkspace.sourceRequestId === event.requestId ? { ...currentWorkspace, sourceRequestId: undefined } : currentWorkspace
+    )
     delete requestChatRef.current[event.requestId]
     delete responseContentRef.current[event.requestId]
     stoppedRequestRef.current.delete(event.requestId)
@@ -959,6 +1063,7 @@ export function App(): JSX.Element {
       return
     }
 
+    const codeIntent = detectCodeIntent(trimmedValue)
     const skillForMessage = selectedSkill
     const requestId = uid('assistant')
     requestChatRef.current[requestId] = activeChat.id
@@ -993,8 +1098,16 @@ export function App(): JSX.Element {
       )
     )
 
-    if (selectedToolIds.includes('canvas')) {
+    if (codeIntent) {
       setCanvasOpen(true)
+      setRightPanelMode('code')
+      setCodeWorkspace({
+        ...initialCodeWorkspace,
+        sourceRequestId: requestId
+      })
+    } else if (selectedToolIds.includes('canvas')) {
+      setCanvasOpen(true)
+      setRightPanelMode('canvas')
     }
 
     const payloadMessages: ChatMessagePayload[] = nextMessages
@@ -1037,6 +1150,7 @@ export function App(): JSX.Element {
 
     if (toolId === 'canvas') {
       setCanvasOpen(true)
+      setRightPanelMode('canvas')
     }
 
     setSelectedToolIds((current) =>
@@ -1046,13 +1160,52 @@ export function App(): JSX.Element {
 
   function onFileChange(files: FileList | null): void {
     if (!files) return
+    const addedAt = new Date().toISOString()
     const nextFiles: AttachedFile[] = Array.from(files).map((file) => ({
       id: uid('file'),
       name: file.name,
       size: file.size,
       status: 'ready'
     }))
+    const nextLibraryFiles: LibraryFile[] = nextFiles.map((file) => ({
+      id: file.id,
+      name: file.name,
+      size: file.size,
+      addedAt
+    }))
     setAttachedFiles((current) => [...current, ...nextFiles])
+    setLibraryFiles((current) => [...nextLibraryFiles, ...current])
+  }
+
+  function deleteLibraryFile(fileId: string): void {
+    setLibraryFiles((currentFiles) => currentFiles.filter((file) => file.id !== fileId))
+    setAttachedFiles((currentFiles) => currentFiles.filter((file) => file.id !== fileId))
+  }
+
+  function createScheduledTask(title: string, schedule: string): void {
+    const trimmedTitle = title.trim()
+    if (!trimmedTitle) return
+
+    setScheduledTasks((currentTasks) => [
+      {
+        id: uid('task'),
+        title: trimmedTitle,
+        schedule: schedule.trim() || t('manualSchedule'),
+        done: false,
+        createdAt: new Date().toISOString()
+      },
+      ...currentTasks
+    ])
+  }
+
+  function toggleScheduledTask(taskId: string): void {
+    setScheduledTasks((currentTasks) =>
+      currentTasks.map((task) => (task.id === taskId ? { ...task, done: !task.done } : task))
+    )
+  }
+
+  function deleteScheduledTask(taskId: string): void {
+    setScheduledTasks((currentTasks) => currentTasks.filter((task) => task.id !== taskId))
   }
 
   function upsertMcpServer(server: Omit<McpServer, 'id' | 'createdAt'> & { id?: string; createdAt?: string }): void {
@@ -1204,9 +1357,14 @@ export function App(): JSX.Element {
         activeChatId={activeChat.id}
         open={sidebarOpen}
         mobileOpen={mobileSidebarOpen}
+        rightPanelMode={rightPanelMode}
+        projectsCollapsed={projectsCollapsed}
+        spacesCollapsed={spacesCollapsed}
         translate={t}
         onToggle={() => setSidebarOpen((open) => !open)}
         onMobileClose={() => setMobileSidebarOpen(false)}
+        onToggleProjectsCollapsed={() => setProjectsCollapsed((collapsed) => !collapsed)}
+        onToggleSpacesCollapsed={() => setSpacesCollapsed((collapsed) => !collapsed)}
         onNewChat={createNewChat}
         onNewProject={createProject}
         onNewSpace={createSpace}
@@ -1223,6 +1381,14 @@ export function App(): JSX.Element {
         skillsCount={visibleSkills.length}
         onOpenSkills={() => setSkillsOpen(true)}
         onOpenSetupAgent={() => setSetupAgentOpen(true)}
+        onOpenLibrary={() => {
+          setRightPanelMode('library')
+          setCanvasOpen(true)
+        }}
+        onOpenTasks={() => {
+          setRightPanelMode('tasks')
+          setCanvasOpen(true)
+        }}
         onOpenProviderSettings={() => setProviderSettingsOpen(true)}
       />
 
@@ -1294,11 +1460,28 @@ export function App(): JSX.Element {
       </main>
 
       {canvasOpen ? (
-        <CanvasPanel
-          value={canvasValue}
+        <RightPanel
+          mode={rightPanelMode}
+          canvasValue={canvasValue}
+          libraryFiles={libraryFiles}
+          scheduledTasks={scheduledTasks}
+          codeWorkspace={codeWorkspace}
+          isStreaming={isStreaming}
           translate={t}
-          onChange={setCanvasValue}
+          onCanvasChange={setCanvasValue}
+          onModeChange={setRightPanelMode}
           onClose={() => setCanvasOpen(false)}
+          onAddFiles={() => fileInputRef.current?.click()}
+          onDeleteLibraryFile={deleteLibraryFile}
+          onCreateScheduledTask={createScheduledTask}
+          onToggleScheduledTask={toggleScheduledTask}
+          onDeleteScheduledTask={deleteScheduledTask}
+          onCodeWorkspaceChange={setCodeWorkspace}
+          onAskCodeRevision={(instruction, selectedText) => {
+            if (isStreaming) return
+            const prompt = createCodeRevisionPrompt(codeWorkspace.content, selectedText, instruction)
+            sendMessage(prompt)
+          }}
         />
       ) : null}
 
@@ -1384,9 +1567,14 @@ function ProjectSidebar(props: {
   activeChatId: string
   open: boolean
   mobileOpen: boolean
+  rightPanelMode: RightPanelMode
+  projectsCollapsed: boolean
+  spacesCollapsed: boolean
   translate: Translate
   onToggle: () => void
   onMobileClose: () => void
+  onToggleProjectsCollapsed: () => void
+  onToggleSpacesCollapsed: () => void
   onNewChat: () => void
   onNewProject: () => void
   onNewSpace: () => void
@@ -1403,6 +1591,8 @@ function ProjectSidebar(props: {
   skillsCount: number
   onOpenSkills: () => void
   onOpenSetupAgent: () => void
+  onOpenLibrary: () => void
+  onOpenTasks: () => void
   onOpenProviderSettings: () => void
 }): JSX.Element {
   const t = props.translate
@@ -1431,7 +1621,11 @@ function ProjectSidebar(props: {
               <input type="search" placeholder={t('searchChats')} aria-label={t('searchChats')} />
             </label>
 
-            <button className={`sidebar-row primary-nav-row ${props.activeProjectId === null ? 'active' : ''}`} type="button" onClick={() => props.onSelectProject(null)}>
+            <button
+              className={`sidebar-row primary-nav-row ${props.activeProjectId === null && props.activeSpaceId === null ? 'active' : ''}`}
+              type="button"
+              onClick={() => props.onSelectProject(null)}
+            >
               <History size={15} />
               <span>{t('allChats')}</span>
               <small>{props.allChats.length}</small>
@@ -1454,7 +1648,12 @@ function ProjectSidebar(props: {
               ))}
             </SidebarSection>
 
-            <SidebarSection title={t('projects')} icon={<Folder size={14} />}>
+            <SidebarSection
+              title={t('projects')}
+              icon={<Folder size={14} />}
+              collapsed={props.projectsCollapsed}
+              onToggle={props.onToggleProjectsCollapsed}
+            >
               {props.projects.map((project) => (
                 <ProjectRow
                   key={project.id}
@@ -1473,7 +1672,12 @@ function ProjectSidebar(props: {
               </button>
             </SidebarSection>
 
-            <SidebarSection title={t('spaces')} icon={<Users size={14} />}>
+            <SidebarSection
+              title={t('spaces')}
+              icon={<Users size={14} />}
+              collapsed={props.spacesCollapsed}
+              onToggle={props.onToggleSpacesCollapsed}
+            >
               {props.spaces.map((space) => (
                 <SpaceRow
                   key={space.id}
@@ -1524,8 +1728,11 @@ function ProjectSidebar(props: {
             <button className="icon-button" type="button" aria-label={t('pinned')} title={t('pinned')}>
               <Pin size={18} />
             </button>
-            <button className="icon-button" type="button" aria-label={t('files')} title={t('files')}>
+            <button className="icon-button" type="button" aria-label={t('files')} title={t('files')} onClick={props.onOpenLibrary}>
               <FileText size={18} />
+            </button>
+            <button className="icon-button" type="button" aria-label={t('scheduledTasks')} title={t('scheduledTasks')} onClick={props.onOpenTasks}>
+              <Clock3 size={18} />
             </button>
           </div>
         )}
@@ -1544,11 +1751,19 @@ function ProjectSidebar(props: {
               <Bot size={15} />
               <span>{t('setupAgent')}</span>
             </button>
-            <button className="sidebar-row" type="button">
+            <button
+              className={`sidebar-row ${props.rightPanelMode === 'library' ? 'active' : ''}`}
+              type="button"
+              onClick={props.onOpenLibrary}
+            >
               <Archive size={15} />
               <span>{t('libraryFiles')}</span>
             </button>
-            <button className="sidebar-row" type="button">
+            <button
+              className={`sidebar-row ${props.rightPanelMode === 'tasks' ? 'active' : ''}`}
+              type="button"
+              onClick={props.onOpenTasks}
+            >
               <Clock3 size={15} />
               <span>{t('scheduledTasks')}</span>
             </button>
@@ -1564,14 +1779,31 @@ function ProjectSidebar(props: {
   )
 }
 
-function SidebarSection(props: { title: string; icon: JSX.Element; children: React.ReactNode }): JSX.Element {
+function SidebarSection(props: {
+  title: string
+  icon: JSX.Element
+  children: React.ReactNode
+  collapsed?: boolean
+  onToggle?: () => void
+}): JSX.Element {
+  const titleContent = (
+    <>
+      {props.icon}
+      {props.title}
+      {props.onToggle ? <ChevronRight className={`section-chevron ${props.collapsed ? '' : 'expanded'}`} size={13} /> : null}
+    </>
+  )
+
   return (
     <section className="sidebar-section">
-      <div className="section-title">
-        {props.icon}
-        {props.title}
-      </div>
-      <div className="section-list">{props.children}</div>
+      {props.onToggle ? (
+        <button className="section-title section-title-button" type="button" onClick={props.onToggle}>
+          {titleContent}
+        </button>
+      ) : (
+        <div className="section-title">{titleContent}</div>
+      )}
+      {props.collapsed ? null : <div className="section-list">{props.children}</div>}
     </section>
   )
 }
@@ -3026,37 +3258,294 @@ function Chip(props: { label: string; icon?: JSX.Element; onRemove: () => void }
   )
 }
 
-function CanvasPanel(props: { value: string; translate: Translate; onChange: (value: string) => void; onClose: () => void }): JSX.Element {
+function RightPanel(props: {
+  mode: RightPanelMode
+  canvasValue: string
+  libraryFiles: LibraryFile[]
+  scheduledTasks: ScheduledTask[]
+  codeWorkspace: CodeWorkspace
+  isStreaming: boolean
+  translate: Translate
+  onCanvasChange: (value: string) => void
+  onModeChange: (mode: RightPanelMode) => void
+  onClose: () => void
+  onAddFiles: () => void
+  onDeleteLibraryFile: (fileId: string) => void
+  onCreateScheduledTask: (title: string, schedule: string) => void
+  onToggleScheduledTask: (taskId: string) => void
+  onDeleteScheduledTask: (taskId: string) => void
+  onCodeWorkspaceChange: React.Dispatch<React.SetStateAction<CodeWorkspace>>
+  onAskCodeRevision: (instruction: string, selectedText: string) => void
+}): JSX.Element {
+  const panelTitle =
+    props.mode === 'library'
+      ? props.translate('libraryFiles')
+      : props.mode === 'tasks'
+      ? props.translate('scheduledTasks')
+      : props.mode === 'code'
+      ? props.translate('codeWorkspace')
+      : props.translate('workingCanvas')
+
   return (
-    <aside className="canvas-panel" aria-label="Canvas editor">
+    <aside className={`canvas-panel right-panel ${props.mode === 'code' ? 'code-workspace-panel' : ''}`} aria-label={panelTitle}>
       <header className="canvas-header">
         <button className="icon-button mobile-only" type="button" aria-label={props.translate('close')} title={props.translate('close')} onClick={props.onClose}>
           <X size={18} />
         </button>
         <div>
-          <strong>{props.translate('workingCanvas')}</strong>
-          <span>Version 1 · Editable draft</span>
+          <strong>{panelTitle}</strong>
+          <span>
+            {props.mode === 'code'
+              ? props.translate('codeWorkspaceHelp')
+              : props.mode === 'library'
+              ? props.translate('libraryHelp')
+              : props.mode === 'tasks'
+              ? props.translate('tasksHelp')
+              : 'Version 1 · Editable draft'}
+          </span>
         </div>
         <div className="canvas-actions">
-          <button className="text-button" type="button" onClick={() => navigator.clipboard?.writeText(props.value)}>
+          <button
+            className="text-button"
+            type="button"
+            onClick={() => navigator.clipboard?.writeText(props.mode === 'code' ? props.codeWorkspace.content : props.canvasValue)}
+          >
             <Copy size={15} />
             {props.translate('copy')}
-          </button>
-          <button className="icon-button" type="button" aria-label={props.translate('delete')} title={props.translate('delete')}>
-            <Trash2 size={17} />
           </button>
           <button className="icon-button" type="button" aria-label={props.translate('close')} title={props.translate('close')} onClick={props.onClose}>
             <X size={18} />
           </button>
         </div>
       </header>
-      <div className="canvas-toolbar">
-        <button type="button">{props.translate('askSelection')}</button>
-        <button type="button">{props.translate('export')}</button>
-        <button type="button">{props.translate('history')}</button>
+      <div className="canvas-toolbar right-panel-tabs">
+        <button className={props.mode === 'canvas' ? 'active' : ''} type="button" onClick={() => props.onModeChange('canvas')}>
+          <FileText size={14} />
+          {props.translate('workingCanvas')}
+        </button>
+        <button className={props.mode === 'library' ? 'active' : ''} type="button" onClick={() => props.onModeChange('library')}>
+          <Archive size={14} />
+          {props.translate('files')}
+        </button>
+        <button className={props.mode === 'tasks' ? 'active' : ''} type="button" onClick={() => props.onModeChange('tasks')}>
+          <Clock3 size={14} />
+          {props.translate('scheduledTasksShort')}
+        </button>
+        <button className={props.mode === 'code' ? 'active' : ''} type="button" onClick={() => props.onModeChange('code')}>
+          <Code2 size={14} />
+          {props.translate('code')}
+        </button>
       </div>
-      <textarea value={props.value} onChange={(event) => props.onChange(event.target.value)} aria-label="Canvas document" />
+      {props.mode === 'library' ? (
+        <LibraryPanel
+          files={props.libraryFiles}
+          translate={props.translate}
+          onAddFiles={props.onAddFiles}
+          onDeleteFile={props.onDeleteLibraryFile}
+        />
+      ) : props.mode === 'tasks' ? (
+        <ScheduledTasksPanel
+          tasks={props.scheduledTasks}
+          translate={props.translate}
+          onCreateTask={props.onCreateScheduledTask}
+          onToggleTask={props.onToggleScheduledTask}
+          onDeleteTask={props.onDeleteScheduledTask}
+        />
+      ) : props.mode === 'code' ? (
+        <CodeWorkspacePanel
+          workspace={props.codeWorkspace}
+          isStreaming={props.isStreaming}
+          translate={props.translate}
+          onChange={props.onCodeWorkspaceChange}
+          onAskRevision={props.onAskCodeRevision}
+        />
+      ) : (
+        <textarea value={props.canvasValue} onChange={(event) => props.onCanvasChange(event.target.value)} aria-label="Canvas document" />
+      )}
     </aside>
+  )
+}
+
+function LibraryPanel(props: {
+  files: LibraryFile[]
+  translate: Translate
+  onAddFiles: () => void
+  onDeleteFile: (fileId: string) => void
+}): JSX.Element {
+  return (
+    <div className="right-panel-content">
+      <button className="primary-button" type="button" onClick={props.onAddFiles}>
+        <Paperclip size={15} />
+        {props.translate('addFiles')}
+      </button>
+      {props.files.length === 0 ? (
+        <div className="panel-empty-state">
+          <FileText size={24} />
+          <strong>{props.translate('libraryEmptyTitle')}</strong>
+          <span>{props.translate('libraryEmptyText')}</span>
+        </div>
+      ) : (
+        <div className="library-file-list">
+          {props.files.map((file) => (
+            <article className="library-file-card" key={file.id}>
+              <FileText size={18} />
+              <div>
+                <strong>{file.name}</strong>
+                <span>
+                  {formatBytes(file.size)} · {new Date(file.addedAt).toLocaleDateString()}
+                </span>
+              </div>
+              <button className="icon-button small" type="button" aria-label={props.translate('delete')} title={props.translate('delete')} onClick={() => props.onDeleteFile(file.id)}>
+                <Trash2 size={14} />
+              </button>
+            </article>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ScheduledTasksPanel(props: {
+  tasks: ScheduledTask[]
+  translate: Translate
+  onCreateTask: (title: string, schedule: string) => void
+  onToggleTask: (taskId: string) => void
+  onDeleteTask: (taskId: string) => void
+}): JSX.Element {
+  const [title, setTitle] = useState('')
+  const [schedule, setSchedule] = useState('')
+
+  function submitTask(): void {
+    props.onCreateTask(title, schedule)
+    setTitle('')
+    setSchedule('')
+  }
+
+  return (
+    <div className="right-panel-content">
+      <div className="task-create-box">
+        <input value={title} placeholder={props.translate('taskTitlePlaceholder')} onChange={(event) => setTitle(event.target.value)} />
+        <input value={schedule} placeholder={props.translate('taskSchedulePlaceholder')} onChange={(event) => setSchedule(event.target.value)} />
+        <button className="primary-button" type="button" disabled={!title.trim()} onClick={submitTask}>
+          <Plus size={15} />
+          {props.translate('create')}
+        </button>
+      </div>
+
+      {props.tasks.length === 0 ? (
+        <div className="panel-empty-state">
+          <Clock3 size={24} />
+          <strong>{props.translate('tasksEmptyTitle')}</strong>
+          <span>{props.translate('tasksEmptyText')}</span>
+        </div>
+      ) : (
+        <div className="task-list">
+          {props.tasks.map((task) => (
+            <article className={`task-card ${task.done ? 'done' : ''}`} key={task.id}>
+              <button className="task-check" type="button" aria-label={props.translate('toggleTask')} onClick={() => props.onToggleTask(task.id)}>
+                {task.done ? <Check size={15} /> : null}
+              </button>
+              <div>
+                <strong>{task.title}</strong>
+                <span>{task.schedule}</span>
+              </div>
+              <button className="icon-button small" type="button" aria-label={props.translate('delete')} title={props.translate('delete')} onClick={() => props.onDeleteTask(task.id)}>
+                <Trash2 size={14} />
+              </button>
+            </article>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CodeWorkspacePanel(props: {
+  workspace: CodeWorkspace
+  isStreaming: boolean
+  translate: Translate
+  onChange: React.Dispatch<React.SetStateAction<CodeWorkspace>>
+  onAskRevision: (instruction: string, selectedText: string) => void
+}): JSX.Element {
+  const canPreviewHtml = /^(html|htm)$/.test(props.workspace.language.toLowerCase()) || /<!doctype html|<html[\s>]|<body[\s>]/i.test(props.workspace.content)
+  const selectedText = props.workspace.selectedText.trim()
+
+  return (
+    <div className="code-workspace">
+      <div className="code-editor-pane">
+        <div className="code-workspace-meta">
+          <Code2 size={15} />
+          <span>{props.workspace.language || 'text'}</span>
+          {props.isStreaming ? <span className="streaming-dot">{props.translate('live')}</span> : null}
+        </div>
+        <textarea
+          value={props.workspace.content}
+          spellCheck={false}
+          aria-label={props.translate('codeWorkspace')}
+          placeholder={props.translate('codeWorkspacePlaceholder')}
+          onChange={(event) =>
+            props.onChange((workspace) => ({
+              ...workspace,
+              content: event.target.value
+            }))
+          }
+          onSelect={(event) => {
+            const target = event.currentTarget
+            props.onChange((workspace) => ({
+              ...workspace,
+              selectedText: target.value.slice(target.selectionStart, target.selectionEnd)
+            }))
+          }}
+        />
+      </div>
+
+      <div className="code-revision-box">
+        <div>
+          <strong>{props.translate('targetedEdit')}</strong>
+          <span>{selectedText ? props.translate('selectionReady') : props.translate('selectionEmpty')}</span>
+        </div>
+        <textarea
+          value={props.workspace.instruction}
+          rows={3}
+          placeholder={props.translate('codeRevisionPlaceholder')}
+          onChange={(event) =>
+            props.onChange((workspace) => ({
+              ...workspace,
+              instruction: event.target.value
+            }))
+          }
+        />
+        <button
+          className="primary-button"
+          type="button"
+          disabled={props.isStreaming || (!props.workspace.content.trim() && !selectedText)}
+          onClick={() => {
+            props.onAskRevision(props.workspace.instruction, props.workspace.selectedText)
+            props.onChange((workspace) => ({ ...workspace, instruction: '' }))
+          }}
+        >
+          <Send size={15} />
+          {props.translate('askSelection')}
+        </button>
+      </div>
+
+      {canPreviewHtml ? (
+        <div className="code-preview-pane">
+          <div className="code-workspace-meta">
+            <Eye size={15} />
+            <span>{props.translate('preview')}</span>
+          </div>
+          <iframe title={props.translate('preview')} sandbox="allow-scripts" srcDoc={props.workspace.content} />
+        </div>
+      ) : (
+        <div className="panel-empty-state compact">
+          <Eye size={22} />
+          <strong>{props.translate('previewUnavailableTitle')}</strong>
+          <span>{props.translate('previewUnavailableText')}</span>
+        </div>
+      )}
+    </div>
   )
 }
 

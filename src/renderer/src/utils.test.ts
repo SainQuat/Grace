@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   createDraftTitle,
   createNotificationBody,
+  detectCodeIntent,
+  extractFirstCodeBlock,
   filterModelsByQuery,
   filterSkillsByQuery,
   formatBytes,
@@ -123,5 +125,33 @@ describe('filterSkillsByQuery', () => {
   it('filters skills while the user types', () => {
     expect(filterSkillsByQuery(skills, 'open').map((skill) => skill.id)).toEqual(['open-dynamic-workflows'])
     expect(filterSkillsByQuery(skills, 'release copy').map((skill) => skill.id)).toEqual(['release-notes'])
+  })
+})
+
+describe('detectCodeIntent', () => {
+  it('detects Russian and English code requests', () => {
+    expect(detectCodeIntent('Напиши HTML страницу с формой')).toBe(true)
+    expect(detectCodeIntent('write a React component for settings')).toBe(true)
+  })
+
+  it('ignores non-code chat requests', () => {
+    expect(detectCodeIntent('Составь план релиза')).toBe(false)
+    expect(detectCodeIntent('Explain the roadmap')).toBe(false)
+  })
+})
+
+describe('extractFirstCodeBlock', () => {
+  it('extracts first fenced code block with language', () => {
+    expect(extractFirstCodeBlock('Use this:\n```tsx\nexport function App() {}\n```\nDone')).toEqual({
+      language: 'tsx',
+      code: 'export function App() {}'
+    })
+  })
+
+  it('treats raw html documents as previewable code', () => {
+    expect(extractFirstCodeBlock('<!doctype html><html><body>Hello</body></html>')).toEqual({
+      language: 'html',
+      code: '<!doctype html><html><body>Hello</body></html>'
+    })
   })
 })
