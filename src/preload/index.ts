@@ -23,10 +23,13 @@ contextBridge.exposeInMainWorld('graceAI', {
   getCustomProvider(): Promise<CustomProviderSummary> {
     return ipcRenderer.invoke('provider:get-custom')
   },
+  getProviders(): Promise<CustomProviderSummary[]> {
+    return ipcRenderer.invoke('provider:get-all')
+  },
   saveCustomProvider(payload: SaveCustomProviderPayload): Promise<CustomProviderSummary> {
     return ipcRenderer.invoke('provider:save-custom', payload)
   },
-  refreshCustomProviderModels(): Promise<CustomProviderSummary> {
-    return ipcRenderer.invoke('provider:refresh-custom-models')
+  refreshCustomProviderModels(providerId?: string): Promise<CustomProviderSummary> {
+    return ipcRenderer.invoke('provider:refresh-custom-models', providerId)
   }
 })

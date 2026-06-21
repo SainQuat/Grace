@@ -1,10 +1,12 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'node:path'
 import type { ChatRequestPayload, SaveCustomProviderPayload } from '../shared/types'
+import { getProviderPreset } from '../shared/providerPresets'
 import { fetchProviderModels, normalizeBaseUrl, streamProviderChat } from './providerClient'
 import {
   getCustomProviderSecret,
   getCustomProviderSummary,
+  getProviderSummaries,
   saveCustomProvider,
   updateCustomProviderModels
 } from './providerStore'
@@ -99,27 +101,32 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('provider:get-custom', async () => getCustomProviderSummary())
+  ipcMain.handle('provider:get-all', async () => getProviderSummaries())
 
   ipcMain.handle('provider:save-custom', async (_event, payload: SaveCustomProviderPayload) => {
+    const preset = getProviderPreset(payload.providerId)
     const baseUrl = normalizeBaseUrl(payload.baseUrl)
     const apiKey = payload.apiKey.trim()
-    const models = await fetchProviderModels(baseUrl, apiKey)
+    const models = await fetchProviderModels(baseUrl, apiKey, preset.apiFormat)
 
     return saveCustomProvider({
+      providerId: preset.id,
+      label: preset.label,
+      apiFormat: preset.apiFormat,
       baseUrl,
       apiKey,
       models
     })
   })
 
-  ipcMain.handle('provider:refresh-custom-models', async () => {
-    const secret = await getCustomProviderSecret()
+  ipcMain.handle('provider:refresh-custom-models', async (_event, providerId = 'custom') => {
+    const secret = await getCustomProviderSecret(providerId)
     if (!secret) {
-      throw new Error('Custom provider is not configured.')
+      throw new Error('Provider is not configured.')
     }
 
-    const models = await fetchProviderModels(secret.baseUrl, secret.apiKey)
-    return updateCustomProviderModels(models)
+    const models = await fetchProviderModels(secret.baseUrl, secret.apiKey, secret.apiFormat)
+    return updateCustomProviderModels(providerId, models)
   })
 
   createWindow()
@@ -140,13 +147,13 @@ async function* createStream(
     return
   }
 
-  const secret = await getCustomProviderSecret()
+  const secret = await getCustomProviderSecret(payload.providerId ?? 'custom')
   if (!secret) {
-    throw new Error('Custom provider is not configured.')
+    throw new Error('Provider is not configured.')
   }
 
   requestState.abortController = new AbortController()
-  yield* streamProviderChat(secret.baseUrl, secret.apiKey, payload, requestState.abortController.signal)
+  yield* streamProviderChat(secret.baseUrl, secret.apiKey, payload, requestState.abortController.signal, secret.apiFormat)
 }
 
 app.on('window-all-closed', () => {

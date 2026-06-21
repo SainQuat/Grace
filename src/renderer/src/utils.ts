@@ -14,6 +14,7 @@ export interface ProviderGroupedItem {
   id: string
   provider: string
   providerKind: 'demo' | 'custom'
+  providerId?: string
   hint?: string
 }
 
@@ -35,7 +36,7 @@ export function groupModelsByProvider<T extends ProviderGroupedItem>(models: T[]
 
   for (const model of models) {
     const isCustom = model.providerKind === 'custom'
-    const groupId = isCustom ? 'custom' : `demo:${model.provider}`
+    const groupId = isCustom ? `custom:${model.providerId ?? model.provider}` : `demo:${model.provider}`
     const existingGroup = groups.find((group) => group.id === groupId)
 
     if (existingGroup) {
@@ -45,7 +46,7 @@ export function groupModelsByProvider<T extends ProviderGroupedItem>(models: T[]
 
     groups.push({
       id: groupId,
-      label: isCustom ? 'Custom provider' : model.provider,
+      label: model.provider,
       detail: isCustom ? model.hint : undefined,
       models: [model]
     })

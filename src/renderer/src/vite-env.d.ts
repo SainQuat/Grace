@@ -14,8 +14,9 @@ declare global {
       stopChat(requestId: string): void
       onChatEvent(callback: (event: ChatStreamEvent) => void): () => void
       getCustomProvider(): Promise<CustomProviderSummary>
+      getProviders(): Promise<CustomProviderSummary[]>
       saveCustomProvider(payload: SaveCustomProviderPayload): Promise<CustomProviderSummary>
-      refreshCustomProviderModels(): Promise<CustomProviderSummary>
+      refreshCustomProviderModels(providerId?: string): Promise<CustomProviderSummary>
     }
   }
 }

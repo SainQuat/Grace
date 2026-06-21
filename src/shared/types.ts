@@ -8,6 +8,7 @@ export interface ChatMessagePayload {
 export interface ChatRequestPayload {
   requestId: string
   providerKind: 'demo' | 'custom'
+  providerId?: string
   modelId: string
   effort: 'low' | 'medium' | 'high'
   tools: string[]
@@ -28,6 +29,9 @@ export interface ProviderModel {
 }
 
 export interface CustomProviderSummary {
+  id?: string
+  label?: string
+  apiFormat?: ProviderApiFormat
   baseUrl: string
   configured: boolean
   models: ProviderModel[]
@@ -37,6 +41,27 @@ export interface CustomProviderSummary {
 }
 
 export interface SaveCustomProviderPayload {
+  providerId?: string
   baseUrl: string
   apiKey: string
+}
+
+export type ProviderApiFormat = 'openai' | 'anthropic'
+
+export interface ProviderPreset {
+  id: string
+  label: string
+  description: string
+  baseUrl: string
+  apiFormat: ProviderApiFormat
+  modelHint: string
+}
+
+export interface SkillSummary {
+  id: string
+  name: string
+  description: string
+  sourceUrl: string
+  appliesTo: string[]
+  status: 'preset' | 'installed'
 }

@@ -1,5 +1,6 @@
 import {
   Archive,
+  BookOpen,
   Bot,
   Check,
   ChevronDown,
@@ -15,6 +16,7 @@ import {
   MoreHorizontal,
   PanelRight,
   Paperclip,
+  Pencil,
   Pin,
   Plus,
   RefreshCw,
@@ -32,7 +34,8 @@ import {
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { ChatMessagePayload, ChatStreamEvent, CustomProviderSummary, ProviderModel } from '../../shared/types'
+import { providerPresets } from '../../shared/providerPresets'
+import type { ChatMessagePayload, ChatStreamEvent, CustomProviderSummary, ProviderModel, SkillSummary } from '../../shared/types'
 import { createDraftTitle, filterModelsByQuery, formatBytes, groupModelsByProvider, uid } from './utils'
 
 type Role = 'user' | 'assistant'
@@ -76,7 +79,14 @@ interface ModelOption {
   description: string
   hint: string
   providerKind: 'demo' | 'custom'
+  providerId?: string
   supportsEffort: boolean
+}
+
+interface SkillInstallDraft {
+  url: string
+  status: 'idle' | 'installed' | 'error'
+  message?: string
 }
 
 const tools: ToolOption[] = [
@@ -149,17 +159,40 @@ const promptSuggestions = [
   'Summarize a file I attach'
 ]
 
-function toCustomModelOptions(models: ProviderModel[], baseUrl: string): ModelOption[] {
-  return models.map((model) => ({
-    id: `custom:${model.id}`,
+const presetSkills: SkillSummary[] = [
+  {
+    id: 'open-dynamic-workflows',
+    name: 'Open Dynamic Workflows',
+    description:
+      'Write short JavaScript workflows that fan tasks out to Codex, Claude Code, Gemini, Qwen, Kimi, or custom CLIs outside the host context.',
+    sourceUrl: 'https://github.com/agisota/open-dynamic-workflows/blob/main/skill/SKILL.md',
+    appliesTo: ['Multi-agent fan-out', 'Review pipelines', 'Discovery loops', 'Large coding tasks'],
+    status: 'preset'
+  }
+]
+
+function toProviderModelOptions(providers: CustomProviderSummary[]): ModelOption[] {
+  return providers.flatMap((provider) =>
+    provider.configured
+      ? provider.models.map((model) => toProviderModelOption(provider, model))
+      : []
+  )
+}
+
+function toProviderModelOption(provider: CustomProviderSummary, model: ProviderModel): ModelOption {
+  const providerId = provider.id ?? 'custom'
+
+  return {
+    id: `${providerId}:${model.id}`,
     modelId: model.id,
     label: model.label || model.id,
-    provider: 'Custom',
+    provider: provider.label ?? 'Custom provider',
     description: model.ownedBy ? `Owned by ${model.ownedBy}` : model.id,
-    hint: baseUrl || 'OpenAI-compatible endpoint',
+    hint: provider.baseUrl || 'OpenAI-compatible endpoint',
     providerKind: 'custom',
+    providerId,
     supportsEffort: false
-  }))
+  }
 }
 
 const initialChats: Chat[] = [
@@ -222,20 +255,28 @@ export function App(): JSX.Element {
   const [toolMenuOpen, setToolMenuOpen] = useState(false)
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const [providerSettingsOpen, setProviderSettingsOpen] = useState(false)
-  const [customProvider, setCustomProvider] = useState<CustomProviderSummary>({
-    baseUrl: '',
-    configured: false,
-    models: []
-  })
+  const [skillsOpen, setSkillsOpen] = useState(false)
+  const [providers, setProviders] = useState<CustomProviderSummary[]>(
+    providerPresets.map((provider) => ({
+      id: provider.id,
+      label: provider.label,
+      apiFormat: provider.apiFormat,
+      baseUrl: provider.baseUrl,
+      configured: false,
+      models: []
+    }))
+  )
+  const [installedSkills, setInstalledSkills] = usePersistentState<SkillSummary[]>('grace.installedSkills', [])
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null)
   const requestChatRef = useRef<Record<string, string>>({})
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   const availableModels = useMemo(
-    () => [...builtInModels, ...toCustomModelOptions(customProvider.models, customProvider.baseUrl)],
-    [customProvider.baseUrl, customProvider.models]
+    () => [...builtInModels, ...toProviderModelOptions(providers)],
+    [providers]
   )
+  const visibleSkills = useMemo(() => [...presetSkills, ...installedSkills], [installedSkills])
   const activeChat = chats.find((chat) => chat.id === activeChatId) ?? chats[0]
   const selectedModel = availableModels.find((model) => model.id === modelId) ?? availableModels[0]
   const selectedTools = tools.filter((tool) => selectedToolIds.includes(tool.id))
@@ -249,15 +290,19 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     window.graceAI
-      .getCustomProvider()
-      .then(setCustomProvider)
+      .getProviders()
+      .then(setProviders)
       .catch((error) => {
-        setCustomProvider({
-          baseUrl: '',
-          configured: false,
-          models: [],
-          lastError: error instanceof Error ? error.message : 'Failed to load custom provider.'
-        })
+        setProviders((currentProviders) =>
+          currentProviders.map((provider) =>
+            provider.id === 'custom'
+              ? {
+                  ...provider,
+                  lastError: error instanceof Error ? error.message : 'Failed to load providers.'
+                }
+              : provider
+          )
+        )
       })
   }, [])
 
@@ -279,6 +324,7 @@ export function App(): JSX.Element {
         setModelMenuOpen(false)
         setMobileSidebarOpen(false)
         setProviderSettingsOpen(false)
+        setSkillsOpen(false)
       }
     }
 
@@ -357,6 +403,60 @@ export function App(): JSX.Element {
     setTimeout(() => textareaRef.current?.focus(), 0)
   }
 
+  function toggleChatPinned(chatId: string): void {
+    setChats((currentChats) =>
+      currentChats.map((chat) =>
+        chat.id === chatId
+          ? {
+              ...chat,
+              pinned: !chat.pinned,
+              updatedAt: new Date().toISOString()
+            }
+          : chat
+      )
+    )
+  }
+
+  function renameChat(chatId: string): void {
+    const chat = chats.find((candidate) => candidate.id === chatId)
+    if (!chat) return
+
+    const nextTitle = window.prompt('Rename chat', chat.title)?.trim()
+    if (!nextTitle) return
+
+    setChats((currentChats) =>
+      currentChats.map((candidate) =>
+        candidate.id === chatId
+          ? {
+              ...candidate,
+              title: nextTitle,
+              updatedAt: new Date().toISOString()
+            }
+          : candidate
+      )
+    )
+  }
+
+  function deleteChat(chatId: string): void {
+    const chat = chats.find((candidate) => candidate.id === chatId)
+    if (!chat || !window.confirm(`Delete "${chat.title}"?`)) return
+
+    const nextChats = chats.filter((candidate) => candidate.id !== chatId)
+    const fallbackChat: Chat = {
+      id: uid('chat'),
+      title: 'New chat',
+      messages: [],
+      updatedAt: new Date().toISOString()
+    }
+    const resolvedChats = nextChats.length > 0 ? nextChats : [fallbackChat]
+
+    if (activeChatId === chatId) {
+      setActiveChatId(resolvedChats[0].id)
+    }
+
+    setChats(resolvedChats)
+  }
+
   function sendMessage(value = composerValue): void {
     const trimmedValue = value.trim()
     if ((!trimmedValue && attachedFiles.length === 0) || isStreaming) {
@@ -404,6 +504,7 @@ export function App(): JSX.Element {
     window.graceAI.startChat({
       requestId,
       providerKind: selectedModel.providerKind,
+      providerId: selectedModel.providerId,
       modelId: selectedModel.modelId,
       effort,
       tools: selectedToolIds,
@@ -459,10 +560,15 @@ export function App(): JSX.Element {
         onToggle={() => setSidebarOpen((open) => !open)}
         onMobileClose={() => setMobileSidebarOpen(false)}
         onNewChat={createNewChat}
+        onToggleChatPinned={toggleChatPinned}
+        onRenameChat={renameChat}
+        onDeleteChat={deleteChat}
         onSelectChat={(chatId) => {
           setActiveChatId(chatId)
           setMobileSidebarOpen(false)
         }}
+        skillsCount={visibleSkills.length}
+        onOpenSkills={() => setSkillsOpen(true)}
         onOpenProviderSettings={() => setProviderSettingsOpen(true)}
       />
 
@@ -534,16 +640,31 @@ export function App(): JSX.Element {
 
       {providerSettingsOpen ? (
         <ProviderSettingsModal
-          provider={customProvider}
+          providers={providers}
           themeMode={themeMode}
           onClose={() => setProviderSettingsOpen(false)}
           onThemeChange={setThemeMode}
           onSaved={(provider) => {
-            setCustomProvider(provider)
-            const firstCustomModel = provider.models[0]
-            if (firstCustomModel) {
-              setModelId(`custom:${firstCustomModel.id}`)
+            setProviders((currentProviders) =>
+              currentProviders.map((currentProvider) => (currentProvider.id === provider.id ? provider : currentProvider))
+            )
+            const firstProviderModel = provider.models[0]
+            if (firstProviderModel && provider.id) {
+              setModelId(`${provider.id}:${firstProviderModel.id}`)
             }
+          }}
+        />
+      ) : null}
+      {skillsOpen ? (
+        <SkillsModal
+          skills={visibleSkills}
+          onClose={() => setSkillsOpen(false)}
+          onInstallSkill={(skill) => {
+            setInstalledSkills((currentSkills) =>
+              currentSkills.some((currentSkill) => currentSkill.sourceUrl === skill.sourceUrl)
+                ? currentSkills
+                : [...currentSkills, skill]
+            )
           }}
         />
       ) : null}
@@ -560,9 +681,29 @@ function Sidebar(props: {
   onMobileClose: () => void
   onNewChat: () => void
   onSelectChat: (chatId: string) => void
+  onToggleChatPinned: (chatId: string) => void
+  onRenameChat: (chatId: string) => void
+  onDeleteChat: (chatId: string) => void
+  skillsCount: number
+  onOpenSkills: () => void
   onOpenProviderSettings: () => void
 }): JSX.Element {
-  const { chats, activeChatId, open, mobileOpen, onToggle, onMobileClose, onNewChat, onSelectChat, onOpenProviderSettings } = props
+  const {
+    chats,
+    activeChatId,
+    open,
+    mobileOpen,
+    onToggle,
+    onMobileClose,
+    onNewChat,
+    onSelectChat,
+    onToggleChatPinned,
+    onRenameChat,
+    onDeleteChat,
+    skillsCount,
+    onOpenSkills,
+    onOpenProviderSettings
+  } = props
   const pinnedChats = chats.filter((chat) => chat.pinned)
   const recentChats = chats.filter((chat) => !chat.pinned)
   const projects = Array.from(new Set(chats.map((chat) => chat.project).filter(Boolean))) as string[]
@@ -591,7 +732,15 @@ function Sidebar(props: {
 
             <SidebarSection title="Pinned" icon={<Pin size={14} />}>
               {pinnedChats.map((chat) => (
-                <SidebarRow key={chat.id} chat={chat} active={chat.id === activeChatId} onSelect={onSelectChat} />
+                <SidebarRow
+                  key={chat.id}
+                  chat={chat}
+                  active={chat.id === activeChatId}
+                  onSelect={onSelectChat}
+                  onTogglePinned={onToggleChatPinned}
+                  onRename={onRenameChat}
+                  onDelete={onDeleteChat}
+                />
               ))}
             </SidebarSection>
 
@@ -607,7 +756,15 @@ function Sidebar(props: {
 
             <SidebarSection title="Recents" icon={<History size={14} />}>
               {recentChats.map((chat) => (
-                <SidebarRow key={chat.id} chat={chat} active={chat.id === activeChatId} onSelect={onSelectChat} />
+                <SidebarRow
+                  key={chat.id}
+                  chat={chat}
+                  active={chat.id === activeChatId}
+                  onSelect={onSelectChat}
+                  onTogglePinned={onToggleChatPinned}
+                  onRename={onRenameChat}
+                  onDelete={onDeleteChat}
+                />
               ))}
             </SidebarSection>
           </>
@@ -630,6 +787,14 @@ function Sidebar(props: {
 
         {open ? (
           <div className="sidebar-bottom">
+            <button className="account-row" type="button" onClick={onOpenSkills}>
+              <BookOpen size={18} />
+              <span>
+                <strong>Skills</strong>
+                <small>{skillsCount} preset / installed</small>
+              </span>
+              <ChevronDown size={15} />
+            </button>
             <button className="sidebar-row" type="button">
               <Archive size={15} />
               <span>Library / Files</span>
@@ -670,17 +835,66 @@ function SidebarSection(props: { title: string; icon: JSX.Element; children: Rea
   )
 }
 
-function SidebarRow(props: { chat: Chat; active: boolean; onSelect: (chatId: string) => void }): JSX.Element {
+function SidebarRow(props: {
+  chat: Chat
+  active: boolean
+  onSelect: (chatId: string) => void
+  onTogglePinned: (chatId: string) => void
+  onRename: (chatId: string) => void
+  onDelete: (chatId: string) => void
+}): JSX.Element {
+  const [actionsOpen, setActionsOpen] = useState(false)
+
   return (
-    <button
-      className={`sidebar-row ${props.active ? 'active' : ''}`}
-      type="button"
-      onClick={() => props.onSelect(props.chat.id)}
-    >
-      <span className="row-dot" />
-      <span>{props.chat.title}</span>
-      <MoreHorizontal className="row-more" size={15} />
-    </button>
+    <div className={`sidebar-row-shell ${props.active ? 'active' : ''}`}>
+      <button className="sidebar-row-main" type="button" onClick={() => props.onSelect(props.chat.id)}>
+        <span className="row-dot" />
+        <span>{props.chat.title}</span>
+      </button>
+      <button
+        className="row-action-button"
+        type="button"
+        aria-label={`Open actions for ${props.chat.title}`}
+        title="Chat actions"
+        onClick={() => setActionsOpen((open) => !open)}
+      >
+        <MoreHorizontal size={15} />
+      </button>
+      {actionsOpen ? (
+        <div className="row-action-menu">
+          <button
+            type="button"
+            onClick={() => {
+              props.onTogglePinned(props.chat.id)
+              setActionsOpen(false)
+            }}
+          >
+            <Pin size={14} />
+            {props.chat.pinned ? 'Unpin chat' : 'Pin chat'}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              props.onRename(props.chat.id)
+              setActionsOpen(false)
+            }}
+          >
+            <Pencil size={14} />
+            Rename
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              props.onDelete(props.chat.id)
+              setActionsOpen(false)
+            }}
+          >
+            <Trash2 size={14} />
+            Delete
+          </button>
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -1060,19 +1274,39 @@ function ModelMenu(props: {
 }
 
 function ProviderSettingsModal(props: {
-  provider: CustomProviderSummary
+  providers: CustomProviderSummary[]
   themeMode: ThemeMode
   onClose: () => void
   onThemeChange: (themeMode: ThemeMode) => void
   onSaved: (provider: CustomProviderSummary) => void
 }): JSX.Element {
-  const [baseUrl, setBaseUrl] = useState(props.provider.baseUrl || 'https://api.zed.md/v1')
+  const [selectedProviderId, setSelectedProviderId] = useState(props.providers.find((provider) => provider.configured)?.id ?? 'openai')
+  const selectedProvider =
+    props.providers.find((provider) => provider.id === selectedProviderId) ??
+    props.providers[0] ?? {
+      id: providerPresets[0].id,
+      label: providerPresets[0].label,
+      apiFormat: providerPresets[0].apiFormat,
+      baseUrl: providerPresets[0].baseUrl,
+      configured: false,
+      models: []
+    }
+  const selectedPreset = providerPresets.find((provider) => provider.id === selectedProvider.id) ?? providerPresets[0]
+  const [baseUrl, setBaseUrl] = useState(selectedProvider.baseUrl || selectedPreset.baseUrl)
   const [apiKey, setApiKey] = useState('')
   const [status, setStatus] = useState<'idle' | 'saving' | 'refreshing'>('idle')
-  const [error, setError] = useState<string | null>(props.provider.lastError ?? null)
+  const [error, setError] = useState<string | null>(selectedProvider.lastError ?? null)
 
-  const hasStoredKey = props.provider.configured
-  const baseUrlMatchesStored = baseUrl.trim().replace(/\/+$/, '') === props.provider.baseUrl.trim().replace(/\/+$/, '')
+  useEffect(() => {
+    const provider = props.providers.find((candidate) => candidate.id === selectedProviderId)
+    const preset = providerPresets.find((candidate) => candidate.id === selectedProviderId)
+    setBaseUrl(provider?.baseUrl || preset?.baseUrl || '')
+    setApiKey('')
+    setError(provider?.lastError ?? null)
+  }, [props.providers, selectedProviderId])
+
+  const hasStoredKey = Boolean(selectedProvider.configured)
+  const baseUrlMatchesStored = baseUrl.trim().replace(/\/+$/, '') === selectedProvider.baseUrl.trim().replace(/\/+$/, '')
   const canSave = baseUrl.trim().length > 0 && (apiKey.trim().length > 0 || (hasStoredKey && baseUrlMatchesStored))
 
   async function saveProvider(): Promise<void> {
@@ -1086,6 +1320,7 @@ function ProviderSettingsModal(props: {
 
     try {
       const provider = await window.graceAI.saveCustomProvider({
+        providerId: selectedProvider.id,
         baseUrl,
         apiKey
       })
@@ -1103,7 +1338,7 @@ function ProviderSettingsModal(props: {
     setError(null)
 
     try {
-      const provider = await window.graceAI.refreshCustomProviderModels()
+      const provider = await window.graceAI.refreshCustomProviderModels(selectedProvider.id)
       props.onSaved(provider)
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : 'Failed to refresh models.')
@@ -1118,7 +1353,7 @@ function ProviderSettingsModal(props: {
         <header className="settings-header">
           <div>
             <h2 id="settings-title">Settings</h2>
-            <p>Manage appearance and custom provider access.</p>
+            <p>Manage appearance, providers, and model access.</p>
           </div>
           <button className="icon-button" type="button" aria-label="Close settings" title="Close" onClick={props.onClose}>
             <X size={18} />
@@ -1131,21 +1366,11 @@ function ProviderSettingsModal(props: {
             <p>Theme</p>
           </div>
           <div className="theme-segmented" role="group" aria-label="Theme">
-            <button
-              className={props.themeMode === 'light' ? 'active' : ''}
-              type="button"
-              aria-pressed={props.themeMode === 'light'}
-              onClick={() => props.onThemeChange('light')}
-            >
+            <button className={props.themeMode === 'light' ? 'active' : ''} type="button" aria-pressed={props.themeMode === 'light'} onClick={() => props.onThemeChange('light')}>
               <Sun size={15} />
               Light
             </button>
-            <button
-              className={props.themeMode === 'dark' ? 'active' : ''}
-              type="button"
-              aria-pressed={props.themeMode === 'dark'}
-              onClick={() => props.onThemeChange('dark')}
-            >
+            <button className={props.themeMode === 'dark' ? 'active' : ''} type="button" aria-pressed={props.themeMode === 'dark'} onClick={() => props.onThemeChange('dark')}>
               <Moon size={15} />
               Dark
             </button>
@@ -1153,26 +1378,35 @@ function ProviderSettingsModal(props: {
         </section>
 
         <div className="settings-subheader">
-          <strong>Custom provider</strong>
-          <p>Connect any OpenAI-compatible endpoint. Models are loaded from `/models`.</p>
+          <strong>Providers</strong>
+          <p>Connect a preset provider. Models load from the provider after the key is saved.</p>
+        </div>
+
+        <div className="provider-grid">
+          {props.providers.map((provider) => (
+            <button
+              key={provider.id}
+              className={`provider-card ${provider.id === selectedProvider.id ? 'active' : ''}`}
+              type="button"
+              onClick={() => setSelectedProviderId(provider.id ?? 'custom')}
+            >
+              <strong>{provider.label}</strong>
+              <span>{provider.configured ? `${provider.models.length} models` : providerPresets.find((preset) => preset.id === provider.id)?.modelHint}</span>
+            </button>
+          ))}
         </div>
 
         <div className="settings-form">
           <label>
             <span>Base URL</span>
-            <input
-              value={baseUrl}
-              type="url"
-              placeholder="https://api.example.com/v1"
-              onChange={(event) => setBaseUrl(event.target.value)}
-            />
+            <input value={baseUrl} type="url" placeholder={selectedPreset.baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
           </label>
           <label>
             <span>API key</span>
             <input
               value={apiKey}
               type="password"
-              placeholder={hasStoredKey ? 'Stored securely. Enter a new key to replace it.' : 'Provider API key'}
+              placeholder={hasStoredKey ? 'Stored securely. Enter a new key to replace it.' : `${selectedProvider.label} API key`}
               onChange={(event) => setApiKey(event.target.value)}
             />
           </label>
@@ -1192,21 +1426,113 @@ function ProviderSettingsModal(props: {
 
         <div className="settings-models">
           <div className="settings-models-header">
-            <strong>{props.provider.models.length} models</strong>
-            {props.provider.updatedAt ? <span>Updated {new Date(props.provider.updatedAt).toLocaleString()}</span> : null}
+            <strong>{selectedProvider.models.length} models</strong>
+            {selectedProvider.updatedAt ? <span>Updated {new Date(selectedProvider.updatedAt).toLocaleString()}</span> : null}
           </div>
           <div className="settings-model-list">
-            {props.provider.models.length > 0 ? (
-              props.provider.models.map((model) => (
+            {selectedProvider.models.length > 0 ? (
+              selectedProvider.models.map((model) => (
                 <div className="settings-model-row" key={model.id}>
                   <strong>{model.label}</strong>
                   <span>{model.id}</span>
                 </div>
               ))
             ) : (
-              <p>No custom models loaded yet.</p>
+              <p>No models loaded for {selectedProvider.label} yet.</p>
             )}
           </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function SkillsModal(props: {
+  skills: SkillSummary[]
+  onClose: () => void
+  onInstallSkill: (skill: SkillSummary) => void
+}): JSX.Element {
+  const [draft, setDraft] = useState<SkillInstallDraft>({ url: '', status: 'idle' })
+
+  function installFromUrl(): void {
+    const url = draft.url.trim()
+
+    try {
+      const parsedUrl = new URL(url)
+      if (parsedUrl.hostname !== 'github.com' && parsedUrl.hostname !== 'raw.githubusercontent.com') {
+        throw new Error('Use a GitHub skill URL.')
+      }
+
+      const pathParts = parsedUrl.pathname.split('/').filter(Boolean)
+      const repoName = pathParts[1] ?? 'Imported skill'
+      const fileName = pathParts.at(-1) ?? 'SKILL.md'
+      const skillName = fileName.toLowerCase() === 'skill.md' ? repoName : fileName.replace(/\.[^.]+$/, '')
+
+      props.onInstallSkill({
+        id: `installed-${Date.now().toString(36)}`,
+        name: skillName,
+        description: 'Imported from a GitHub skill URL. Agent installation can fetch the full skill files from this source.',
+        sourceUrl: url,
+        appliesTo: ['Imported workflow', 'Agent-assisted installation'],
+        status: 'installed'
+      })
+      setDraft({ url: '', status: 'installed', message: 'Skill URL added.' })
+    } catch (error) {
+      setDraft({
+        url,
+        status: 'error',
+        message: error instanceof Error ? error.message : 'Invalid skill URL.'
+      })
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="settings-modal skills-modal" role="dialog" aria-modal="true" aria-labelledby="skills-title">
+        <header className="settings-header">
+          <div>
+            <h2 id="skills-title">Skills</h2>
+            <p>Preset skills and GitHub skill links available to Grace.</p>
+          </div>
+          <button className="icon-button" type="button" aria-label="Close skills" title="Close" onClick={props.onClose}>
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="skill-install-box">
+          <label>
+            <span>Install from GitHub URL</span>
+            <input
+              value={draft.url}
+              type="url"
+              placeholder="https://github.com/org/repo/blob/main/skill/SKILL.md"
+              onChange={(event) => setDraft({ url: event.target.value, status: 'idle' })}
+            />
+          </label>
+          <button className="primary-button" type="button" disabled={!draft.url.trim()} onClick={installFromUrl}>
+            Add skill URL
+          </button>
+          {draft.message ? <p className={`skill-install-message ${draft.status}`}>{draft.message}</p> : null}
+        </div>
+
+        <div className="skill-list">
+          {props.skills.map((skill) => (
+            <article className="skill-card" key={`${skill.status}:${skill.sourceUrl}`}>
+              <div className="skill-card-header">
+                <strong>{skill.name}</strong>
+                <span>{skill.status}</span>
+              </div>
+              <p>{skill.description}</p>
+              <div className="skill-tags">
+                {skill.appliesTo.map((item) => (
+                  <span key={item}>{item}</span>
+                ))}
+              </div>
+              <a href={skill.sourceUrl} target="_blank" rel="noreferrer">
+                Source
+              </a>
+            </article>
+          ))}
         </div>
       </section>
     </div>
