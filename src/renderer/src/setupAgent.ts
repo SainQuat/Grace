@@ -18,6 +18,9 @@ export interface SetupAgentPlan {
   mcpServer?: ParsedMcpServer
   provider?: ParsedProvider
   selectedModelId?: string
+  themeMode?: 'light' | 'dark'
+  locale?: 'ru' | 'en'
+  cancelled?: boolean
 }
 
 const urlPattern = /https?:\/\/[^\s,)]+/i
@@ -39,6 +42,13 @@ export function createSetupAgentPlan(input: string): SetupAgentPlan {
 
   const plan: SetupAgentPlan = {
     summary: 'I prepared a local setup plan.'
+  }
+
+  if (/^(нет|no|cancel|отмена|не надо|ничего)$/i.test(lowerText)) {
+    return {
+      summary: 'Ок, без изменений.',
+      cancelled: true
+    }
   }
 
   if (mentionsMcp) {
@@ -65,10 +75,24 @@ export function createSetupAgentPlan(input: string): SetupAgentPlan {
     plan.selectedModelId = modelId
   }
 
+  if (/светл|light/.test(lowerText)) {
+    plan.themeMode = 'light'
+  } else if (/темн|dark/.test(lowerText)) {
+    plan.themeMode = 'dark'
+  }
+
+  if (/англ|english|\ben\b/.test(lowerText)) {
+    plan.locale = 'en'
+  } else if (/рус|russian|\bru\b/.test(lowerText)) {
+    plan.locale = 'ru'
+  }
+
   const actions: string[] = []
   if (plan.mcpServer) actions.push(`MCP: ${plan.mcpServer.name}`)
   if (plan.provider) actions.push(`provider: ${plan.provider.baseUrl}`)
   if (plan.selectedModelId) actions.push(`model: ${plan.selectedModelId}`)
+  if (plan.themeMode) actions.push(`theme: ${plan.themeMode}`)
+  if (plan.locale) actions.push(`language: ${plan.locale}`)
   plan.summary = actions.length > 0 ? `Prepared ${actions.join(', ')}.` : 'No local settings action found. I can still answer with the setup model.'
 
   return plan

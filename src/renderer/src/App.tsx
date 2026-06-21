@@ -326,7 +326,7 @@ export function App(): JSX.Element {
   const [projects, setProjects] = usePersistentState<Project[]>('grace.projects', initialProjects)
   const [activeProjectId, setActiveProjectId] = usePersistentState<string | null>(
     'grace.activeProjectId',
-    initialProjects[0].id
+    null
   )
   const [mcpServers, setMcpServers] = usePersistentState<McpServer[]>('grace.mcpServers', [])
   const [setupAgentOpen, setSetupAgentOpen] = useState(false)
@@ -384,6 +384,10 @@ export function App(): JSX.Element {
   useLayoutEffect(() => {
     document.documentElement.dataset.theme = themeMode
   }, [themeMode])
+
+  useLayoutEffect(() => {
+    document.documentElement.dataset.platform = navigator.platform.toLowerCase().includes('mac') ? 'darwin' : 'other'
+  }, [])
 
   useEffect(() => {
     window.graceAI
@@ -582,12 +586,24 @@ export function App(): JSX.Element {
 
   function selectProject(projectId: string | null): void {
     setActiveProjectId(projectId)
-    const firstProjectChat = chats.find((chat) =>
-      projectId ? resolveChatProjectId(chat, projects) === projectId : true
-    )
-    if (firstProjectChat) {
-      setActiveChatId(firstProjectChat.id)
+    const nextVisibleChats = projectId
+      ? chats.filter((chat) => resolveChatProjectId(chat, projects) === projectId)
+      : chats
+    const activeChatStillVisible = nextVisibleChats.some((chat) => chat.id === activeChatId)
+
+    if (!activeChatStillVisible && nextVisibleChats[0]) {
+      setActiveChatId(nextVisibleChats[0].id)
     }
+
+    setMobileSidebarOpen(false)
+  }
+
+  function selectChat(chatId: string): void {
+    const chat = chats.find((candidate) => candidate.id === chatId)
+    if (!chat) return
+
+    setActiveChatId(chatId)
+    setActiveProjectId(resolveChatProjectId(chat, projects) ?? null)
     setMobileSidebarOpen(false)
   }
 
@@ -653,6 +669,9 @@ export function App(): JSX.Element {
           : chat
       )
     )
+    if (chatId === activeChatId) {
+      setActiveProjectId(project?.id ?? null)
+    }
   }
 
   function sendMessage(value = composerValue): void {
@@ -792,6 +811,28 @@ export function App(): JSX.Element {
     const plan = createSetupAgentPlan(trimmedInput)
     const localNotes: string[] = []
 
+    if (plan.cancelled) {
+      setSetupAgentMessages((currentMessages) => [
+        ...currentMessages,
+        {
+          id: uid('setup-assistant'),
+          role: 'assistant',
+          content: plan.summary
+        }
+      ])
+      return
+    }
+
+    if (plan.themeMode) {
+      setThemeMode(plan.themeMode)
+      localNotes.push(`тема: ${plan.themeMode === 'light' ? 'светлая' : 'темная'}`)
+    }
+
+    if (plan.locale) {
+      setLocale(plan.locale)
+      localNotes.push(`язык: ${plan.locale === 'ru' ? 'русский' : 'английский'}`)
+    }
+
     if (plan.mcpServer) {
       upsertMcpServer({
         name: plan.mcpServer.name,
@@ -841,13 +882,13 @@ export function App(): JSX.Element {
         modelId: 'dugin400',
         messages: [{ role: 'user', content: trimmedInput }]
       })
-      remoteAnswer = answer.configured ? answer.content : answer.content
+      remoteAnswer = answer.configured || localNotes.length === 0 ? answer.content : ''
     } catch (error) {
-      remoteAnswer = error instanceof Error ? error.message : 'Setup agent request failed.'
+      remoteAnswer = localNotes.length === 0 ? (error instanceof Error ? error.message : 'Setup agent request failed.') : ''
     }
 
     const assistantContent = [
-      localNotes.length > 0 ? `Локально применено: ${localNotes.join(', ')}.` : plan.summary,
+      localNotes.length > 0 ? `Готово. Локально применено: ${localNotes.join(', ')}.` : plan.summary,
       remoteAnswer
     ]
       .filter(Boolean)
@@ -886,10 +927,7 @@ export function App(): JSX.Element {
         onToggleChatPinned={toggleChatPinned}
         onRenameChat={renameChat}
         onDeleteChat={deleteChat}
-        onSelectChat={(chatId) => {
-          setActiveChatId(chatId)
-          setMobileSidebarOpen(false)
-        }}
+        onSelectChat={selectChat}
         skillsCount={visibleSkills.length}
         onOpenSkills={() => setSkillsOpen(true)}
         onOpenSetupAgent={() => setSetupAgentOpen(true)}
@@ -1070,6 +1108,12 @@ function ProjectSidebar(props: {
               <input type="search" placeholder={t('searchChats')} aria-label={t('searchChats')} />
             </label>
 
+            <button className={`sidebar-row primary-nav-row ${props.activeProjectId === null ? 'active' : ''}`} type="button" onClick={() => props.onSelectProject(null)}>
+              <History size={15} />
+              <span>{t('allChats')}</span>
+              <small>{props.allChats.length}</small>
+            </button>
+
             <SidebarSection title={t('pinned')} icon={<Pin size={14} />}>
               {pinnedChats.map((chat) => (
                 <SidebarRow
@@ -1088,11 +1132,6 @@ function ProjectSidebar(props: {
             </SidebarSection>
 
             <SidebarSection title={t('projects')} icon={<Folder size={14} />}>
-              <button className={`sidebar-row ${props.activeProjectId === null ? 'active' : ''}`} type="button" onClick={() => props.onSelectProject(null)}>
-                <History size={15} />
-                <span>{t('allChats')}</span>
-                <small>{props.allChats.length}</small>
-              </button>
               {props.projects.map((project) => (
                 <ProjectRow
                   key={project.id}
@@ -1112,7 +1151,7 @@ function ProjectSidebar(props: {
               </button>
             </SidebarSection>
 
-            <SidebarSection title={t('recents')} icon={<History size={14} />}>
+            <SidebarSection title={props.activeProjectId ? t('projectChats') : t('recents')} icon={<History size={14} />}>
               {recentChats.map((chat) => (
                 <SidebarRow
                   key={chat.id}
@@ -1203,10 +1242,11 @@ function ProjectRow(props: {
   onCycleColor: (projectId: string) => void
 }): JSX.Element {
   const [actionsOpen, setActionsOpen] = useState(false)
+  const shellRef = useCloseOnOutsideClick<HTMLDivElement>(actionsOpen, () => setActionsOpen(false))
   const Icon = getProjectIcon(props.project.icon)
 
   return (
-    <div className={`sidebar-row-shell project-row-shell ${props.active ? 'active' : ''}`}>
+    <div ref={shellRef} className={`sidebar-row-shell project-row-shell ${props.active ? 'active' : ''}`}>
       <button className="sidebar-row-main project-row-main" type="button" onClick={() => props.onSelect(props.project.id)}>
         <span className="project-icon-dot" style={{ color: props.project.color, backgroundColor: `${props.project.color}22` }}>
           <Icon size={15} />
@@ -1235,11 +1275,23 @@ function ProjectRow(props: {
             <Pencil size={14} />
             {props.translate('renameProject')}
           </button>
-          <button type="button" onClick={() => props.onCycleIcon(props.project.id)}>
+          <button
+            type="button"
+            onClick={() => {
+              props.onCycleIcon(props.project.id)
+              setActionsOpen(false)
+            }}
+          >
             <Folder size={14} />
             {props.translate('projectIcon')}
           </button>
-          <button type="button" onClick={() => props.onCycleColor(props.project.id)}>
+          <button
+            type="button"
+            onClick={() => {
+              props.onCycleColor(props.project.id)
+              setActionsOpen(false)
+            }}
+          >
             <span className="project-color-dot" style={{ backgroundColor: props.project.color }} />
             {props.translate('projectColor')}
           </button>
@@ -1261,12 +1313,13 @@ function SidebarRow(props: {
   onDelete: (chatId: string) => void
 }): JSX.Element {
   const [actionsOpen, setActionsOpen] = useState(false)
+  const shellRef = useCloseOnOutsideClick<HTMLDivElement>(actionsOpen, () => setActionsOpen(false))
   const fallbackTranslate: Translate = (key) => translate('en', key)
   const t = props.translate ?? fallbackTranslate
   const projects = props.projects ?? []
 
   return (
-    <div className={`sidebar-row-shell ${props.active ? 'active' : ''}`}>
+    <div ref={shellRef} className={`sidebar-row-shell ${props.active ? 'active' : ''}`}>
       <button className="sidebar-row-main" type="button" onClick={() => props.onSelect(props.chat.id)}>
         <span className="row-dot" />
         <span>{props.chat.title}</span>
@@ -2235,6 +2288,39 @@ function CanvasPanel(props: { value: string; translate: Translate; onChange: (va
 
 function ShareIcon(): JSX.Element {
   return <Copy size={15} />
+}
+
+function useCloseOnOutsideClick<T extends HTMLElement>(
+  open: boolean,
+  onClose: () => void
+): React.RefObject<T> {
+  const ref = useRef<T | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+
+    function onPointerDown(event: PointerEvent): void {
+      const target = event.target
+      if (target instanceof Node && ref.current && !ref.current.contains(target)) {
+        onClose()
+      }
+    }
+
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key === 'Escape') {
+        onClose()
+      }
+    }
+
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [onClose, open])
+
+  return ref
 }
 
 function usePersistentState<T>(key: string, initialValue: T): [T, React.Dispatch<React.SetStateAction<T>>] {

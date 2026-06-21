@@ -33,4 +33,20 @@ describe('createSetupAgentPlan', () => {
       url: 'https://mcp.example.com'
     })
   })
+
+  it('detects theme and language commands', () => {
+    expect(createSetupAgentPlan('смени тему на светлую')).toMatchObject({
+      themeMode: 'light'
+    })
+    expect(createSetupAgentPlan('переключи язык на английский')).toMatchObject({
+      locale: 'en'
+    })
+  })
+
+  it('detects cancel responses without remote-only actions', () => {
+    expect(createSetupAgentPlan('нет')).toMatchObject({
+      cancelled: true,
+      summary: 'Ок, без изменений.'
+    })
+  })
 })
