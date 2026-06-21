@@ -1,0 +1,27 @@
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Conductor collaboration scratchpad
+.context/
+
+# Dependencies and build output
+node_modules/
+dist/
+build/
+.next/
+out/
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
