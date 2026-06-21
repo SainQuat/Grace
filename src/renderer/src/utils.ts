@@ -46,6 +46,11 @@ export interface SkillSearchItem {
   appliesTo: string[]
 }
 
+export interface ExtractedCodeBlock {
+  language: string
+  code: string
+}
+
 export interface ProviderModelGroup<T extends ProviderGroupedItem> {
   id: string
   label: string
@@ -127,6 +132,84 @@ export function filterSkillsByQuery<T extends SkillSearchItem>(skills: T[], quer
 
     return tokens.every((token) => searchableText.includes(token))
   })
+}
+
+export function detectCodeIntent(input: string): boolean {
+  const normalized = input.toLowerCase().trim()
+
+  if (!normalized) {
+    return false
+  }
+
+  if (normalized.includes('```')) {
+    return true
+  }
+
+  const directCodeTerms = [
+    'код',
+    'кода',
+    'кодом',
+    'html',
+    'css',
+    'javascript',
+    'typescript',
+    'react',
+    'jsx',
+    'tsx',
+    'node',
+    'python',
+    'script',
+    'function',
+    'component',
+    'компонент',
+    'функц',
+    'скрипт',
+    'верст',
+    'страниц'
+  ]
+
+  const actionTerms = [
+    'напиши',
+    'сделай',
+    'создай',
+    'сгенерируй',
+    'добавь',
+    'исправь',
+    'доработай',
+    'build',
+    'create',
+    'write',
+    'generate',
+    'fix',
+    'refactor'
+  ]
+
+  return (
+    directCodeTerms.some((term) => normalized.includes(term)) &&
+    (actionTerms.some((term) => normalized.includes(term)) || /\b(html|css|js|ts|jsx|tsx)\b/.test(normalized))
+  )
+}
+
+export function extractFirstCodeBlock(markdown: string): ExtractedCodeBlock | null {
+  const fencedBlock = /```([a-zA-Z0-9_-]*)[ \t]*\n([\s\S]*?)```/.exec(markdown)
+
+  if (fencedBlock) {
+    return {
+      language: fencedBlock[1]?.trim().toLowerCase() || 'text',
+      code: fencedBlock[2].replace(/\s+$/, '')
+    }
+  }
+
+  const trimmed = markdown.trim()
+
+  if (/<!doctype html|<html[\s>]|<body[\s>]/i.test(trimmed)) {
+    return {
+      language: 'html',
+      code: trimmed
+    }
+  }
+
+  return null
 }
 
 export function uid(prefix: string): string {
