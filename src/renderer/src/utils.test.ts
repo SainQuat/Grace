@@ -19,17 +19,26 @@ describe('groupModelsByProvider', () => {
   it('groups custom models under one provider heading', () => {
     const groups = groupModelsByProvider([
       { id: 'grace-balanced', provider: 'Grace', providerKind: 'demo', hint: 'Balanced' },
-      { id: 'custom-a', provider: 'Custom', providerKind: 'custom', hint: 'https://api.example.com/v1' },
-      { id: 'custom-b', provider: 'Custom', providerKind: 'custom', hint: 'https://api.example.com/v1' }
+      { id: 'custom-a', provider: 'Custom provider', providerKind: 'custom', providerId: 'custom', hint: 'https://api.example.com/v1' },
+      { id: 'custom-b', provider: 'Custom provider', providerKind: 'custom', providerId: 'custom', hint: 'https://api.example.com/v1' }
     ])
 
     expect(groups).toHaveLength(2)
     expect(groups[1]).toMatchObject({
-      id: 'custom',
+      id: 'custom:custom',
       label: 'Custom provider',
       detail: 'https://api.example.com/v1'
     })
     expect(groups[1].models.map((model) => model.id)).toEqual(['custom-a', 'custom-b'])
+  })
+
+  it('keeps configured providers in separate groups', () => {
+    const groups = groupModelsByProvider([
+      { id: 'openai:gpt-4.1', provider: 'OpenAI / Codex', providerKind: 'custom', providerId: 'openai' },
+      { id: 'anthropic:claude-sonnet', provider: 'Anthropic', providerKind: 'custom', providerId: 'anthropic' }
+    ])
+
+    expect(groups.map((group) => group.label)).toEqual(['OpenAI / Codex', 'Anthropic'])
   })
 })
 
