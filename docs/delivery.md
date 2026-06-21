@@ -30,6 +30,7 @@ Releases are tag-driven:
 ```
 
 That creates and pushes `v0.1.0`. The `Release` GitHub Actions workflow then creates a GitHub Release with generated notes.
+For desktop builds, the same workflow builds and attaches unsigned macOS `.dmg` installers.
 
 Use semantic versioning:
 
