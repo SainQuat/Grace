@@ -3,6 +3,8 @@ import type {
   ChatRequestPayload,
   ChatStreamEvent,
   CustomProviderSummary,
+  ResponseNotificationPayload,
+  ResponseNotificationResult,
   SaveCustomProviderPayload,
   SetupAgentRequestPayload,
   SetupAgentResponse
@@ -33,6 +35,9 @@ contextBridge.exposeInMainWorld('graceAI', {
   },
   refreshCustomProviderModels(providerId?: string): Promise<CustomProviderSummary> {
     return ipcRenderer.invoke('provider:refresh-custom-models', providerId)
+  },
+  showResponseNotification(payload: ResponseNotificationPayload): Promise<ResponseNotificationResult> {
+    return ipcRenderer.invoke('notification:show-response', payload)
   },
   askSetupAgent(payload: SetupAgentRequestPayload): Promise<SetupAgentResponse> {
     return ipcRenderer.invoke('setup-agent:ask', payload)

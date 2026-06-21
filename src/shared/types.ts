@@ -33,6 +33,16 @@ export type ChatStreamEvent =
   | { type: 'done'; requestId: string }
   | { type: 'error'; requestId: string; message: string }
 
+export interface ResponseNotificationPayload {
+  title: string
+  body: string
+}
+
+export interface ResponseNotificationResult {
+  shown: boolean
+  reason?: 'empty' | 'focused' | 'unsupported'
+}
+
 export interface ProviderModel {
   id: string
   label: string

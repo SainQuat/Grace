@@ -1,6 +1,12 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, Notification } from 'electron'
 import { join } from 'node:path'
-import type { ChatRequestPayload, SaveCustomProviderPayload, SetupAgentRequestPayload } from '../shared/types'
+import type {
+  ChatRequestPayload,
+  ResponseNotificationPayload,
+  ResponseNotificationResult,
+  SaveCustomProviderPayload,
+  SetupAgentRequestPayload
+} from '../shared/types'
 import { getProviderPreset } from '../shared/providerPresets'
 import { fetchProviderModels, normalizeBaseUrl, streamProviderChat } from './providerClient'
 import {
@@ -14,6 +20,10 @@ import {
 const activeRequests = new Map<string, { stopped: boolean; abortController?: AbortController }>()
 
 const isDevUrl = process.env.ELECTRON_RENDERER_URL
+
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.sainquat.grace')
+}
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -129,6 +139,49 @@ app.whenReady().then(() => {
     const models = await fetchProviderModels(secret.baseUrl, secret.apiKey, secret.apiFormat)
     return updateCustomProviderModels(providerId, models)
   })
+
+  ipcMain.handle(
+    'notification:show-response',
+    (event, payload: ResponseNotificationPayload): ResponseNotificationResult => {
+      const sourceWindow = BrowserWindow.fromWebContents(event.sender)
+      const title = String(payload?.title || 'Grace').trim().slice(0, 90) || 'Grace'
+      const body = String(payload?.body || '').trim()
+
+      if (!body) {
+        return { shown: false, reason: 'empty' }
+      }
+
+      if (sourceWindow?.isFocused()) {
+        return { shown: false, reason: 'focused' }
+      }
+
+      if (!Notification.isSupported()) {
+        return { shown: false, reason: 'unsupported' }
+      }
+
+      try {
+        const notification = new Notification({ title, body })
+
+        notification.on('click', () => {
+          if (!sourceWindow || sourceWindow.isDestroyed()) {
+            return
+          }
+
+          if (sourceWindow.isMinimized()) {
+            sourceWindow.restore()
+          }
+
+          sourceWindow.show()
+          sourceWindow.focus()
+        })
+
+        notification.show()
+        return { shown: true }
+      } catch {
+        return { shown: false, reason: 'unsupported' }
+      }
+    }
+  )
 
   ipcMain.handle('setup-agent:ask', async (_event, payload: SetupAgentRequestPayload) => {
     const providerId = payload.providerId ?? 'custom'

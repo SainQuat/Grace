@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createDraftTitle, filterModelsByQuery, formatBytes, groupModelsByProvider } from './utils'
+import { createDraftTitle, createNotificationBody, filterModelsByQuery, formatBytes, groupModelsByProvider } from './utils'
 
 describe('formatBytes', () => {
   it('formats bytes and kilobytes', () => {
@@ -12,6 +12,16 @@ describe('createDraftTitle', () => {
   it('normalizes and truncates chat titles', () => {
     expect(createDraftTitle('   hello    world   ')).toBe('hello world')
     expect(createDraftTitle('a'.repeat(80))).toBe(`${'a'.repeat(39)}...`)
+  })
+})
+
+describe('createNotificationBody', () => {
+  it('normalizes streamed response whitespace', () => {
+    expect(createNotificationBody('  Done.\n\nHere is   the answer.  ')).toBe('Done. Here is the answer.')
+  })
+
+  it('truncates long responses for desktop notifications', () => {
+    expect(createNotificationBody('a'.repeat(20), 12)).toBe('aaaaaaaaa...')
   })
 })
 
