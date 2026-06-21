@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { createDraftTitle, createNotificationBody, filterModelsByQuery, formatBytes, groupModelsByProvider } from './utils'
+import {
+  createDraftTitle,
+  createNotificationBody,
+  filterModelsByQuery,
+  filterSkillsByQuery,
+  formatBytes,
+  getLeadingSkillMentionQuery,
+  groupModelsByProvider
+} from './utils'
 
 describe('formatBytes', () => {
   it('formats bytes and kilobytes', () => {
@@ -81,5 +89,39 @@ describe('filterModelsByQuery', () => {
 
   it('matches case-insensitive model ids and multi-token queries', () => {
     expect(filterModelsByQuery(models, 'DEEP reason').map((model) => model.modelId)).toEqual(['deepseek-reasoner'])
+  })
+})
+
+describe('getLeadingSkillMentionQuery', () => {
+  it('detects an @ skill query at the start of the composer', () => {
+    expect(getLeadingSkillMentionQuery('@')).toBe('')
+    expect(getLeadingSkillMentionQuery('@open')).toBe('open')
+  })
+
+  it('ignores regular messages and multiline text', () => {
+    expect(getLeadingSkillMentionQuery('hello @open')).toBeNull()
+    expect(getLeadingSkillMentionQuery('@open\nnext')).toBeNull()
+  })
+})
+
+describe('filterSkillsByQuery', () => {
+  const skills = [
+    {
+      id: 'open-dynamic-workflows',
+      name: 'Open Dynamic Workflows',
+      description: 'Fan out subtasks to coding agents.',
+      appliesTo: ['Multi-agent fan-out', 'Review pipelines']
+    },
+    {
+      id: 'release-notes',
+      name: 'Release Notes',
+      description: 'Write readable release copy.',
+      appliesTo: ['Shipping', 'Changelog']
+    }
+  ]
+
+  it('filters skills while the user types', () => {
+    expect(filterSkillsByQuery(skills, 'open').map((skill) => skill.id)).toEqual(['open-dynamic-workflows'])
+    expect(filterSkillsByQuery(skills, 'release copy').map((skill) => skill.id)).toEqual(['release-notes'])
   })
 })

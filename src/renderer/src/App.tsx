@@ -42,7 +42,16 @@ import { providerPresets } from '../../shared/providerPresets'
 import type { ChatMessagePayload, ChatStreamEvent, CustomProviderSummary, ProviderModel, SkillSummary } from '../../shared/types'
 import { locales, translate, type Locale, type Translate } from './i18n'
 import { createSetupAgentPlan } from './setupAgent'
-import { createDraftTitle, createNotificationBody, filterModelsByQuery, formatBytes, groupModelsByProvider, uid } from './utils'
+import {
+  createDraftTitle,
+  createNotificationBody,
+  filterModelsByQuery,
+  filterSkillsByQuery,
+  formatBytes,
+  getLeadingSkillMentionQuery,
+  groupModelsByProvider,
+  uid
+} from './utils'
 
 type Role = 'user' | 'assistant'
 type ThemeMode = 'light' | 'dark'
@@ -51,6 +60,7 @@ interface Message {
   id: string
   role: Role
   content: string
+  skill?: SkillSummary
   pending?: boolean
 }
 
@@ -385,6 +395,18 @@ function getMemberLabel(count: number, translateFn: Translate): string {
   return count === 1 ? translateFn('member') : translateFn('members')
 }
 
+function createSkillContext(skill: SkillSummary): string {
+  const appliesTo = skill.appliesTo.length > 0 ? skill.appliesTo.join(', ') : 'General assistance'
+
+  return [
+    'Use the selected Grace skill for this response.',
+    `Skill: ${skill.name}`,
+    `Description: ${skill.description}`,
+    `Applies to: ${appliesTo}`,
+    `Source: ${skill.sourceUrl}`
+  ].join('\n')
+}
+
 export function App(): JSX.Element {
   const [chats, setChats] = usePersistentState<Chat[]>('grace.chats', initialChats)
   const [activeChatId, setActiveChatId] = usePersistentState<string>('grace.activeChatId', initialChats[0].id)
@@ -393,6 +415,7 @@ export function App(): JSX.Element {
   const [canvasOpen, setCanvasOpen] = usePersistentState('grace.canvasOpen', true)
   const [canvasValue, setCanvasValue] = usePersistentState('grace.canvasValue', canvasInitialValue)
   const [composerValue, setComposerValue] = useState('')
+  const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null)
   const [selectedToolIds, setSelectedToolIds] = useState<string[]>([])
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
   const [modelId, setModelId] = usePersistentState('grace.modelId', builtInModels[0].id)
@@ -455,6 +478,7 @@ export function App(): JSX.Element {
   )
   const visibleSkills = useMemo(() => [...presetSkills, ...installedSkills], [installedSkills])
   const t: Translate = useMemo(() => (key) => translate(locale, key), [locale])
+  const selectedSkill = visibleSkills.find((skill) => skill.id === selectedSkillId) ?? null
   const activeChat = chats.find((chat) => chat.id === activeChatId) ?? chats[0]
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null
   const activeSpace = spaces.find((space) => space.id === activeSpaceId) ?? null
@@ -492,6 +516,12 @@ export function App(): JSX.Element {
   useEffect(() => {
     responseNotificationsEnabledRef.current = responseNotificationsEnabled
   }, [responseNotificationsEnabled])
+
+  useEffect(() => {
+    if (selectedSkillId && !visibleSkills.some((skill) => skill.id === selectedSkillId)) {
+      setSelectedSkillId(null)
+    }
+  }, [selectedSkillId, visibleSkills])
 
   useEffect(() => {
     window.graceAI
@@ -929,6 +959,7 @@ export function App(): JSX.Element {
       return
     }
 
+    const skillForMessage = selectedSkill
     const requestId = uid('assistant')
     requestChatRef.current[requestId] = activeChat.id
     responseContentRef.current[requestId] = ''
@@ -936,7 +967,8 @@ export function App(): JSX.Element {
     const userMessage: Message = {
       id: uid('user'),
       role: 'user',
-      content: trimmedValue || `Attached ${attachedFiles.length} file${attachedFiles.length === 1 ? '' : 's'}`
+      content: trimmedValue || `Attached ${attachedFiles.length} file${attachedFiles.length === 1 ? '' : 's'}`,
+      skill: skillForMessage ?? undefined
     }
     const assistantMessage: Message = {
       id: requestId,
@@ -968,6 +1000,9 @@ export function App(): JSX.Element {
     const payloadMessages: ChatMessagePayload[] = nextMessages
       .filter((message) => message.id !== requestId)
       .map((message) => ({ role: message.role, content: message.content }))
+    const messagesWithSkillContext: ChatMessagePayload[] = skillForMessage
+      ? [{ role: 'system', content: createSkillContext(skillForMessage) }, ...payloadMessages]
+      : payloadMessages
 
     window.graceAI.startChat({
       requestId,
@@ -977,11 +1012,12 @@ export function App(): JSX.Element {
       effort,
       tools: selectedToolIds,
       files: attachedFiles.map((file) => ({ name: file.name, size: file.size })),
-      messages: payloadMessages
+      messages: messagesWithSkillContext
     })
 
     setActiveRequestId(requestId)
     setComposerValue('')
+    setSelectedSkillId(null)
     setAttachedFiles([])
   }
 
@@ -1224,12 +1260,16 @@ export function App(): JSX.Element {
           toolMenuOpen={toolMenuOpen}
           modelMenuOpen={modelMenuOpen}
           selectedModel={selectedModel}
+          selectedSkill={selectedSkill}
           effort={effort}
           selectedTools={selectedTools}
           attachedFiles={attachedFiles}
+          availableSkills={visibleSkills}
           onValueChange={setComposerValue}
           onSend={() => sendMessage()}
           onStop={stopStreaming}
+          onSelectSkill={(skill) => setSelectedSkillId(skill.id)}
+          onRemoveSkill={() => setSelectedSkillId(null)}
           onToggleToolMenu={() => setToolMenuOpen((open) => !open)}
           onToggleModelMenu={() => setModelMenuOpen((open) => !open)}
           onSelectModel={(nextModel) => {
@@ -1911,6 +1951,12 @@ function MessageBubble(props: {
   return (
     <article className={`message ${message.role}`}>
       <div className="message-body">
+        {message.skill ? (
+          <span className="message-skill-chip">
+            <Bot size={14} />
+            {message.skill.name}
+          </span>
+        ) : null}
         {message.role === 'assistant' ? (
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
@@ -1983,12 +2029,16 @@ function Composer(props: {
   toolMenuOpen: boolean
   modelMenuOpen: boolean
   selectedModel: ModelOption
+  selectedSkill: SkillSummary | null
   effort: 'low' | 'medium' | 'high'
   selectedTools: ToolOption[]
   attachedFiles: AttachedFile[]
+  availableSkills: SkillSummary[]
   onValueChange: (value: string) => void
   onSend: () => void
   onStop: () => void
+  onSelectSkill: (skill: SkillSummary) => void
+  onRemoveSkill: () => void
   onToggleToolMenu: () => void
   onToggleModelMenu: () => void
   onSelectModel: (model: ModelOption) => void
@@ -1999,10 +2049,36 @@ function Composer(props: {
   availableModels: ModelOption[]
   onOpenProviderSettings: () => void
 }): JSX.Element {
+  const [activeSkillIndex, setActiveSkillIndex] = useState(0)
+  const skillQuery = props.selectedSkill ? null : getLeadingSkillMentionQuery(props.value)
+  const filteredSkills = useMemo(
+    () => (skillQuery === null ? [] : filterSkillsByQuery(props.availableSkills, skillQuery)),
+    [props.availableSkills, skillQuery]
+  )
+  const skillMenuOpen = skillQuery !== null
+
+  useEffect(() => {
+    setActiveSkillIndex(0)
+  }, [skillQuery])
+
+  function selectSkill(skill: SkillSummary): void {
+    props.onSelectSkill(skill)
+    props.onValueChange('')
+    setActiveSkillIndex(0)
+    requestAnimationFrame(() => props.textareaRef.current?.focus())
+  }
+
   return (
     <section className="composer-zone" aria-label={props.translate('messageGrace')}>
       <div className="composer-shell">
         <div className="composer-chips">
+          {props.selectedSkill ? (
+            <Chip
+              label={props.selectedSkill.name}
+              icon={<Bot size={14} />}
+              onRemove={props.onRemoveSkill}
+            />
+          ) : null}
           {props.selectedTools.map((tool) => (
             <Chip key={tool.id} label={tool.label} onRemove={() => props.onRemoveTool(tool.id)} />
           ))}
@@ -2024,12 +2100,48 @@ function Composer(props: {
           placeholder={props.translate('messageGrace')}
           onChange={(event) => props.onValueChange(event.target.value)}
           onKeyDown={(event) => {
+            if (skillMenuOpen && event.key === 'ArrowDown') {
+              event.preventDefault()
+              setActiveSkillIndex((currentIndex) => Math.min(currentIndex + 1, Math.max(filteredSkills.length - 1, 0)))
+              return
+            }
+
+            if (skillMenuOpen && event.key === 'ArrowUp') {
+              event.preventDefault()
+              setActiveSkillIndex((currentIndex) => Math.max(currentIndex - 1, 0))
+              return
+            }
+
+            if (skillMenuOpen && event.key === 'Escape') {
+              event.preventDefault()
+              props.onValueChange('')
+              return
+            }
+
+            if (skillMenuOpen && event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
+              const skill = filteredSkills[activeSkillIndex] ?? filteredSkills[0]
+              if (skill) {
+                selectSkill(skill)
+              }
+              return
+            }
+
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault()
               props.onSend()
             }
           }}
         />
+
+        {skillMenuOpen ? (
+          <SkillMentionMenu
+            skills={filteredSkills}
+            activeIndex={activeSkillIndex}
+            translate={props.translate}
+            onSelect={selectSkill}
+          />
+        ) : null}
 
         <div className="composer-footer">
           <div className="composer-left">
@@ -2071,6 +2183,46 @@ function Composer(props: {
         ) : null}
       </div>
     </section>
+  )
+}
+
+function SkillMentionMenu(props: {
+  skills: SkillSummary[]
+  activeIndex: number
+  translate: Translate
+  onSelect: (skill: SkillSummary) => void
+}): JSX.Element {
+  return (
+    <div className="skill-mention-menu" role="listbox" aria-label={props.translate('selectSkill')}>
+      <div className="skill-mention-header">
+        <strong>{props.translate('selectSkill')}</strong>
+        <span>{props.translate('skillMentionHelp')}</span>
+      </div>
+      {props.skills.length > 0 ? (
+        props.skills.map((skill, index) => (
+          <button
+            key={skill.id}
+            className={`skill-mention-row ${index === props.activeIndex ? 'active' : ''}`}
+            type="button"
+            role="option"
+            aria-selected={index === props.activeIndex}
+            onMouseDown={(event) => {
+              event.preventDefault()
+              props.onSelect(skill)
+            }}
+          >
+            <Bot size={17} />
+            <span>
+              <strong>{skill.name}</strong>
+              <small>{skill.description}</small>
+              {skill.appliesTo[0] ? <em>{skill.appliesTo.slice(0, 2).join(' · ')}</em> : null}
+            </span>
+          </button>
+        ))
+      ) : (
+        <p className="skill-mention-empty">{props.translate('noSkillsFound')}</p>
+      )}
+    </div>
   )
 }
 

@@ -543,6 +543,21 @@ input:focus-visible {
   border-radius: 20px;
 }
 
+.message-skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  margin: 0 0 8px;
+  padding: 0 8px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .message-body p {
   margin: 0 0 12px;
 }
@@ -660,6 +675,73 @@ input:focus-visible {
 
 .composer-shell textarea::placeholder {
   color: var(--muted);
+}
+
+.skill-mention-menu {
+  position: absolute;
+  right: 12px;
+  bottom: calc(100% + 10px);
+  left: 12px;
+  z-index: 45;
+  display: grid;
+  max-height: min(360px, 52vh);
+  overflow: auto;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+}
+
+.skill-mention-header {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px 10px;
+}
+
+.skill-mention-header span,
+.skill-mention-row small,
+.skill-mention-row em,
+.skill-mention-empty {
+  color: var(--muted);
+}
+
+.skill-mention-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-height: 58px;
+  padding: 10px;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+  border-radius: 10px;
+}
+
+.skill-mention-row.active,
+.skill-mention-row:hover {
+  background: var(--surface-muted);
+}
+
+.skill-mention-row span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.skill-mention-row small,
+.skill-mention-row em {
+  overflow: hidden;
+  font-size: 12px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-mention-empty {
+  margin: 0;
+  padding: 10px;
 }
 
 .composer-chips {
@@ -1697,6 +1779,10 @@ input:focus-visible {
     width: auto;
     max-height: min(68vh, 560px);
     overflow: auto;
+  }
+
+  .skill-mention-menu {
+    max-height: min(48vh, 420px);
   }
 
   .model-menu {

@@ -39,6 +39,13 @@ export interface ModelSearchItem extends ProviderGroupedItem {
   description?: string
 }
 
+export interface SkillSearchItem {
+  id: string
+  name: string
+  description: string
+  appliesTo: string[]
+}
+
 export interface ProviderModelGroup<T extends ProviderGroupedItem> {
   id: string
   label: string
@@ -84,6 +91,35 @@ export function filterModelsByQuery<T extends ModelSearchItem>(models: T[], quer
       model.id,
       model.modelId,
       model.label
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+
+    return tokens.every((token) => searchableText.includes(token))
+  })
+}
+
+export function getLeadingSkillMentionQuery(value: string): string | null {
+  const match = /^@([^\n]*)$/.exec(value)
+  return match ? match[1].trimStart() : null
+}
+
+export function filterSkillsByQuery<T extends SkillSearchItem>(skills: T[], query: string): T[] {
+  const normalizedQuery = query.trim().toLowerCase()
+
+  if (!normalizedQuery) {
+    return skills
+  }
+
+  const tokens = normalizedQuery.split(/\s+/).filter(Boolean)
+
+  return skills.filter((skill) => {
+    const searchableText = [
+      skill.id,
+      skill.name,
+      skill.description,
+      ...skill.appliesTo
     ]
       .filter(Boolean)
       .join(' ')
