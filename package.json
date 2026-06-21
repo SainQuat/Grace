@@ -42,6 +42,7 @@
     "appId": "com.sainquat.grace",
     "productName": "Grace",
     "asar": true,
+    "afterPack": "./scripts/codesign-mac-app.mjs",
     "directories": {
       "buildResources": "resources",
       "output": "release"
