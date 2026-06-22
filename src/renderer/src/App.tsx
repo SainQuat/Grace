@@ -42,7 +42,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { providerPresets } from '../../shared/providerPresets'
 import type { ChatMessagePayload, ChatStreamEvent, CustomProviderSummary, ProviderModel, SkillSummary } from '../../shared/types'
-import { locales, translate, type Locale, type Translate } from './i18n'
+import { locales, translate, type Locale, type Translate, type TranslationKey } from './i18n'
 import { createSetupAgentPlan } from './setupAgent'
 import {
   createDraftTitle,
@@ -280,12 +280,12 @@ const builtInModels: ModelOption[] = [
   }
 ]
 
-const promptSuggestions = [
-  'Draft a launch checklist for v0.1',
-  'Rewrite this note in a clearer style',
-  'Explain this code path step by step',
-  'Plan a desktop app release',
-  'Summarize a file I attach'
+const promptSuggestions: TranslationKey[] = [
+  'promptReleaseChecklist',
+  'promptRewriteNote',
+  'promptExplainCode',
+  'promptPlanRelease',
+  'promptSummarizeFile'
 ]
 
 const presetSkills: SkillSummary[] = [
@@ -2122,16 +2122,21 @@ function ChatThread(props: {
 
   if (props.chat.messages.length === 0) {
     return (
-      <section className="chat-thread empty-state" aria-label="Empty chat">
+      <section className="chat-thread empty-state" aria-label={props.translate('newChat')}>
         <div className="empty-content">
-          <div className="mark" aria-hidden="true">
-            <Bot size={28} />
-          </div>
-          <h1>{props.translate('howCanHelp')}</h1>
-          <div className="suggestion-grid">
-            {promptSuggestions.map((suggestion) => (
-              <button key={suggestion} className="suggestion-card" type="button" onClick={() => props.onPromptClick(suggestion)}>
-                {suggestion}
+          <div className="empty-kicker">{props.translate('newChat')}</div>
+          <h2>{props.translate('emptyChatTitle')}</h2>
+          <p>{props.translate('emptyChatHint')}</p>
+          <div className="suggestion-grid" aria-label={props.translate('emptyChatSuggestions')}>
+            {promptSuggestions.map((suggestionKey) => (
+              <button
+                key={suggestionKey}
+                className="suggestion-command"
+                type="button"
+                onClick={() => props.onPromptClick(props.translate(suggestionKey))}
+              >
+                <span aria-hidden="true">/</span>
+                {props.translate(suggestionKey)}
               </button>
             ))}
           </div>

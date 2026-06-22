@@ -389,8 +389,7 @@ input:focus-visible {
 .sidebar-row:hover,
 .icon-button:hover,
 .text-button:hover,
-.model-chip:hover,
-.suggestion-card:hover {
+.model-chip:hover {
   background: var(--surface-hover);
 }
 
@@ -494,8 +493,7 @@ input:focus-visible {
   font-size: 12px;
 }
 
-.avatar,
-.mark {
+.avatar {
   display: grid;
   place-items: center;
   color: var(--primary-text);
@@ -681,43 +679,64 @@ input:focus-visible {
 }
 
 .empty-state {
-  display: grid;
-  place-items: center;
+  display: block;
 }
 
 .empty-content {
-  width: min(100%, 680px);
-  margin: 0 auto;
-  text-align: center;
+  width: min(100%, 620px);
+  margin: 18px auto 0;
+  padding: 14px 0 0;
+  text-align: left;
 }
 
-.mark {
-  width: 42px;
-  height: 42px;
-  margin: 0 auto 12px;
-  border-radius: 9px;
+.empty-kicker {
+  margin-bottom: 8px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
-.empty-content h1 {
-  margin: 0 0 16px;
-  font-size: 22px;
+.empty-content h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
   font-weight: 650;
+}
+
+.empty-content p {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .suggestion-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
-.suggestion-card {
-  min-height: 46px;
-  padding: 10px;
+.suggestion-command {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 8px 10px;
   color: var(--text);
   text-align: left;
-  background: var(--surface-muted);
+  background: transparent;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 6px;
+}
+
+.suggestion-command:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+.suggestion-command span {
+  color: var(--accent);
+  font-weight: 750;
 }
 
 .composer-zone {
@@ -2057,8 +2076,8 @@ input:focus-visible {
     padding: 10px 12px 12px;
   }
 
-  .empty-content h1 {
-    font-size: 22px;
+  .empty-content h2 {
+    font-size: 18px;
   }
 
   .suggestion-grid {
