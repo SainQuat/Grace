@@ -1,5 +1,6 @@
 import {
   Archive,
+  BarChart3,
   BookOpen,
   Bot,
   Code2,
@@ -26,6 +27,7 @@ import {
   RefreshCw,
   Search,
   Send,
+  Shield,
   Settings,
   Square,
   Sun,
@@ -40,8 +42,10 @@ import {
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { mcpMarketplacePresets } from '../../shared/mcpMarketplace'
 import { providerPresets } from '../../shared/providerPresets'
 import type { ChatMessagePayload, ChatStreamEvent, CustomProviderSummary, ProviderModel, SkillSummary } from '../../shared/types'
+import { advanceAgentRun, createAgentRun, getAgentRunProgress, setAgentRunExpanded, type AgentRun } from './agentWorkflow'
 import { locales, translate, type Locale, type Translate, type TranslationKey } from './i18n'
 import { createSetupAgentPlan } from './setupAgent'
 import {
@@ -56,10 +60,30 @@ import {
   groupModelsByProvider,
   uid
 } from './utils'
+import {
+  applyArtifactDiff,
+  createArtifactDiff,
+  createMemoryContext,
+  createUsageRecord,
+  filterPromptTemplates,
+  finalizeUsageRecord,
+  getMemoryForScope,
+  isLocalProviderUrl,
+  rejectArtifactDiff,
+  selectModelForRouter,
+  summarizeUsage,
+  updateUsageCompletion,
+  type ArtifactDiff,
+  type MemoryEntry,
+  type ModelRouterMode,
+  type PrivacySettings,
+  type PromptTemplate,
+  type UsageRecord
+} from './workspaceFeatures'
 
 type Role = 'user' | 'assistant'
 type ThemeMode = 'light' | 'dark'
-type RightPanelMode = 'canvas' | 'library' | 'tasks' | 'code'
+type RightPanelMode = 'canvas' | 'library' | 'tasks' | 'code' | 'memory' | 'checkpoints' | 'usage'
 
 interface Message {
   id: string
@@ -67,6 +91,7 @@ interface Message {
   content: string
   skill?: SkillSummary
   pending?: boolean
+  agentRun?: AgentRun
 }
 
 interface Chat {
@@ -115,6 +140,9 @@ interface McpServer {
   envText: string
   enabled: boolean
   createdAt: string
+  sourcePresetId?: string
+  description?: string
+  requiredEnv?: string[]
 }
 
 interface SetupAgentMessage {
@@ -143,6 +171,10 @@ interface ScheduledTask {
   schedule: string
   done: boolean
   createdAt: string
+  prompt?: string
+  enabled?: boolean
+  status?: 'idle' | 'running' | 'done' | 'error'
+  runHistory?: Array<{ id: string; status: 'done' | 'error'; at: string; chatId?: string }>
 }
 
 interface CodeWorkspace {
@@ -151,6 +183,21 @@ interface CodeWorkspace {
   selectedText: string
   instruction: string
   sourceRequestId?: string
+  version?: number
+  pendingDiff?: ArtifactDiff
+}
+
+interface ChatCheckpoint {
+  id: string
+  chatId: string
+  title: string
+  createdAt: string
+  messageCount: number
+  snapshot: {
+    messages: Message[]
+    canvasValue: string
+    codeWorkspace: CodeWorkspace
+  }
 }
 
 interface ToolOption {
@@ -324,6 +371,14 @@ function toProviderModelOption(provider: CustomProviderSummary, model: ProviderM
   }
 }
 
+function isModelLocal(model: ModelOption, providers: CustomProviderSummary[]): boolean {
+  if (model.provider.toLowerCase().includes('local')) return true
+  if (model.providerKind !== 'custom') return false
+
+  const provider = providers.find((candidate) => candidate.id === model.providerId)
+  return Boolean(provider?.baseUrl && isLocalProviderUrl(provider.baseUrl))
+}
+
 const initialChats: Chat[] = [
   {
     id: 'chat-product-plan',
@@ -390,6 +445,10 @@ const initialScheduledTasks: ScheduledTask[] = [
     title: 'Проверить релиз перед публикацией',
     schedule: 'Перед каждым tag v*',
     done: false,
+    prompt: 'Проверь готовность следующего релиза Grace и составь короткий checklist.',
+    enabled: true,
+    status: 'idle',
+    runHistory: [],
     createdAt: new Date(Date.now() - 1000 * 60 * 45).toISOString()
   }
 ]
@@ -398,7 +457,33 @@ const initialCodeWorkspace: CodeWorkspace = {
   content: '',
   language: 'text',
   selectedText: '',
-  instruction: ''
+  instruction: '',
+  version: 1
+}
+
+const initialPromptTemplates: PromptTemplate[] = [
+  {
+    id: 'prompt-release-notes',
+    title: 'Release notes',
+    content: 'Напиши понятные release notes: что добавили, что исправили, что проверить перед установкой.',
+    tags: ['release', 'ship'],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  },
+  {
+    id: 'prompt-design-review',
+    title: 'Strict UI review',
+    content: 'Проверь интерфейс на строгий Conductor-like стиль: плотность, контраст, реальные controls, отсутствие AI slop.',
+    tags: ['design', 'qa'],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  }
+]
+
+const initialPrivacySettings: PrivacySettings = {
+  localOnly: false,
+  allowNotifications: true,
+  allowRemoteSetupAgent: true
 }
 
 function resolveChatProjectId(chat: Chat, projects: Project[]): string | undefined {
@@ -521,6 +606,12 @@ export function App(): JSX.Element {
   )
   const [activeSpaceId, setActiveSpaceId] = usePersistentState<string | null>('grace.activeSpaceId', null)
   const [mcpServers, setMcpServers] = usePersistentState<McpServer[]>('grace.mcpServers', [])
+  const [memoryEntries, setMemoryEntries] = usePersistentState<MemoryEntry[]>('grace.memoryEntries', [])
+  const [promptTemplates, setPromptTemplates] = usePersistentState<PromptTemplate[]>('grace.promptTemplates', initialPromptTemplates)
+  const [checkpoints, setCheckpoints] = usePersistentState<ChatCheckpoint[]>('grace.checkpoints', [])
+  const [usageRecords, setUsageRecords] = usePersistentState<UsageRecord[]>('grace.usageRecords', [])
+  const [privacySettings, setPrivacySettings] = usePersistentState<PrivacySettings>('grace.privacySettings', initialPrivacySettings)
+  const [modelRouterMode, setModelRouterMode] = usePersistentState<ModelRouterMode>('grace.modelRouterMode', 'manual')
   const [setupAgentOpen, setSetupAgentOpen] = useState(false)
   const [setupAgentMessages, setSetupAgentMessages] = usePersistentState<SetupAgentMessage[]>(
     'grace.setupAgentMessages',
@@ -535,6 +626,7 @@ export function App(): JSX.Element {
   const [toolMenuOpen, setToolMenuOpen] = useState(false)
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const [providerSettingsOpen, setProviderSettingsOpen] = useState(false)
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [projectDialog, setProjectDialog] = useState<{ mode: 'create' | 'edit'; projectId?: string } | null>(null)
   const [spaceDialog, setSpaceDialog] = useState<{ mode: 'create' | 'edit'; spaceId?: string } | null>(null)
   const [skillsOpen, setSkillsOpen] = useState(false)
@@ -549,9 +641,12 @@ export function App(): JSX.Element {
     }))
   )
   const [installedSkills, setInstalledSkills] = usePersistentState<SkillSummary[]>('grace.installedSkills', [])
-  const [activeRequestId, setActiveRequestId] = useState<string | null>(null)
+  const [activeRequests, setActiveRequests] = useState<Record<string, string>>({})
   const requestChatRef = useRef<Record<string, string>>({})
   const responseContentRef = useRef<Record<string, string>>({})
+  const usageByRequestRef = useRef<Record<string, string>>({})
+  const nextRevisionBaseRef = useRef<string | null>(null)
+  const revisionBaseByRequestRef = useRef<Record<string, string>>({})
   const stoppedRequestRef = useRef<Set<string>>(new Set())
   const chatsRef = useRef(chats)
   const activeChatIdRef = useRef(activeChatId)
@@ -569,6 +664,15 @@ export function App(): JSX.Element {
   const activeChat = chats.find((chat) => chat.id === activeChatId) ?? chats[0]
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null
   const activeSpace = spaces.find((space) => space.id === activeSpaceId) ?? null
+  const activeMemoryEntries = useMemo(
+    () =>
+      getMemoryForScope(memoryEntries, [
+        { scope: 'project', scopeId: activeChat.projectId ?? activeProjectId },
+        { scope: 'space', scopeId: activeChat.spaceId ?? activeSpaceId },
+        { scope: 'chat', scopeId: activeChat.id }
+      ]),
+    [activeChat.id, activeChat.projectId, activeChat.spaceId, activeProjectId, activeSpaceId, memoryEntries]
+  )
   const visibleChats = useMemo(
     () =>
       activeSpaceId
@@ -578,10 +682,14 @@ export function App(): JSX.Element {
         : chats,
     [activeProjectId, activeSpaceId, chats, projects]
   )
-  const selectedModel = availableModels.find((model) => model.id === modelId) ?? availableModels[0]
+  const routedModel = modelRouterMode === 'manual' ? undefined : selectModelForRouter(availableModels, modelRouterMode, providers)
+  const selectedModel = routedModel ?? availableModels.find((model) => model.id === modelId) ?? availableModels[0]
   const selectedTools = tools.filter((tool) => selectedToolIds.includes(tool.id))
   const canSend = composerValue.trim().length > 0 || attachedFiles.length > 0
-  const isStreaming = activeRequestId !== null
+  const activeChatRequestId = Object.entries(activeRequests).find(([, chatId]) => chatId === activeChat.id)?.[0] ?? null
+  const isStreaming = Boolean(activeChatRequestId)
+  const runningChatIds = useMemo(() => new Set(Object.values(activeRequests)), [activeRequests])
+  const usageSummary = useMemo(() => summarizeUsage(usageRecords), [usageRecords])
   const nextThemeMode: ThemeMode = themeMode === 'dark' ? 'light' : 'dark'
 
   useLayoutEffect(() => {
@@ -673,10 +781,16 @@ export function App(): JSX.Element {
         setModelMenuOpen(false)
         setMobileSidebarOpen(false)
         setProviderSettingsOpen(false)
+        setCommandPaletteOpen(false)
         setProjectDialog(null)
         setSpaceDialog(null)
         setSkillsOpen(false)
         setSetupAgentOpen(false)
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setCommandPaletteOpen((open) => !open)
       }
     }
 
@@ -702,11 +816,23 @@ export function App(): JSX.Element {
                 ...chat,
                 messages: chat.messages.map((message) =>
                   message.id === event.requestId
-                    ? { ...message, content: `${message.content}${event.text}`, pending: true }
+                    ? {
+                        ...message,
+                        content: `${message.content}${event.text}`,
+                        pending: true,
+                        agentRun: message.agentRun ? advanceAgentRun(message.agentRun, 'delta') : undefined
+                      }
                     : message
                 )
               }
             : chat
+        )
+      )
+      setUsageRecords((currentRecords) =>
+        currentRecords.map((record) =>
+          record.id === usageByRequestRef.current[event.requestId]
+            ? updateUsageCompletion(record, responseContentRef.current[event.requestId]?.length ?? 0)
+            : record
         )
       )
       return
@@ -720,18 +846,47 @@ export function App(): JSX.Element {
             ? {
                 ...chat,
                 messages: chat.messages.map((message) =>
-                  message.id === event.requestId ? { ...message, pending: false } : message
+                  message.id === event.requestId
+                    ? {
+                        ...message,
+                        pending: false,
+                        agentRun: message.agentRun ? advanceAgentRun(message.agentRun, 'done') : undefined
+                      }
+                    : message
                 )
               }
             : chat
         )
       )
-      setActiveRequestId((current) => (current === event.requestId ? null : current))
-      setCodeWorkspace((currentWorkspace) =>
-        currentWorkspace.sourceRequestId === event.requestId ? { ...currentWorkspace, sourceRequestId: undefined } : currentWorkspace
+      setUsageRecords((currentRecords) =>
+        currentRecords.map((record) =>
+          record.id === usageByRequestRef.current[event.requestId] ? finalizeUsageRecord(record, 'completed') : record
+        )
       )
+      setActiveRequests((current) => {
+        const next = { ...current }
+        delete next[event.requestId]
+        return next
+      })
+      setCodeWorkspace((currentWorkspace) => {
+        if (currentWorkspace.sourceRequestId !== event.requestId) return currentWorkspace
+        const revisionBase = revisionBaseByRequestRef.current[event.requestId]
+        if (revisionBase && currentWorkspace.content.trim() && currentWorkspace.content !== revisionBase) {
+          return {
+            ...currentWorkspace,
+            content: revisionBase,
+            sourceRequestId: undefined,
+            pendingDiff: createArtifactDiff(uid('diff'), revisionBase, currentWorkspace.content, 'Targeted code edit'),
+            version: currentWorkspace.version ?? 1
+          }
+        }
+
+        return { ...currentWorkspace, sourceRequestId: undefined, version: currentWorkspace.version ?? 1 }
+      })
       delete requestChatRef.current[event.requestId]
       delete responseContentRef.current[event.requestId]
+      delete usageByRequestRef.current[event.requestId]
+      delete revisionBaseByRequestRef.current[event.requestId]
       stoppedRequestRef.current.delete(event.requestId)
       return
     }
@@ -743,19 +898,35 @@ export function App(): JSX.Element {
               ...chat,
               messages: chat.messages.map((message) =>
                 message.id === event.requestId
-                  ? { ...message, content: `Generation failed: ${event.message}`, pending: false }
+                  ? {
+                      ...message,
+                      content: `Generation failed: ${event.message}`,
+                      pending: false,
+                      agentRun: message.agentRun ? advanceAgentRun(message.agentRun, 'error') : undefined
+                    }
                   : message
               )
             }
           : chat
       )
     )
-    setActiveRequestId(null)
+    setUsageRecords((currentRecords) =>
+      currentRecords.map((record) =>
+        record.id === usageByRequestRef.current[event.requestId] ? finalizeUsageRecord(record, 'error', undefined, event.message) : record
+      )
+    )
+    setActiveRequests((current) => {
+      const next = { ...current }
+      delete next[event.requestId]
+      return next
+    })
     setCodeWorkspace((currentWorkspace) =>
       currentWorkspace.sourceRequestId === event.requestId ? { ...currentWorkspace, sourceRequestId: undefined } : currentWorkspace
     )
     delete requestChatRef.current[event.requestId]
     delete responseContentRef.current[event.requestId]
+    delete usageByRequestRef.current[event.requestId]
+    delete revisionBaseByRequestRef.current[event.requestId]
     stoppedRequestRef.current.delete(event.requestId)
   }
 
@@ -1061,8 +1232,13 @@ export function App(): JSX.Element {
     const codeIntent = detectCodeIntent(trimmedValue)
     const skillForMessage = selectedSkill
     const requestId = uid('assistant')
+    const startedAt = new Date().toISOString()
     requestChatRef.current[requestId] = activeChat.id
     responseContentRef.current[requestId] = ''
+    if (nextRevisionBaseRef.current) {
+      revisionBaseByRequestRef.current[requestId] = nextRevisionBaseRef.current
+      nextRevisionBaseRef.current = null
+    }
     stoppedRequestRef.current.delete(requestId)
     const userMessage: Message = {
       id: uid('user'),
@@ -1074,11 +1250,47 @@ export function App(): JSX.Element {
       id: requestId,
       role: 'assistant',
       content: '',
-      pending: true
+      pending: true,
+      agentRun: createAgentRun({
+        id: uid('run'),
+        requestId,
+        skillName: skillForMessage?.name,
+        hasCodeIntent: codeIntent,
+        memoryCount: activeMemoryEntries.length,
+        toolCount: selectedToolIds.length,
+        fileCount: attachedFiles.length,
+        startedAt
+      })
     }
 
     const nextMessages = [...activeChat.messages, userMessage, assistantMessage]
     const nextTitle = activeChat.messages.length === 0 ? createDraftTitle(userMessage.content) : activeChat.title
+
+    if (privacySettings.localOnly && !isModelLocal(selectedModel, providers)) {
+      setChats((currentChats) =>
+        currentChats.map((chat) =>
+          chat.id === activeChat.id
+            ? {
+                ...chat,
+                title: nextTitle,
+                messages: [
+                  ...activeChat.messages,
+                  userMessage,
+                  {
+                    ...assistantMessage,
+                    pending: false,
+                    content: 'Локальный режим включен. Выберите локального провайдера или отключите Local Privacy Mode.',
+                    agentRun: assistantMessage.agentRun ? advanceAgentRun(assistantMessage.agentRun, 'error') : undefined
+                  }
+                ],
+                updatedAt: new Date().toISOString()
+              }
+            : chat
+        )
+      )
+      setComposerValue('')
+      return
+    }
 
     setChats((currentChats) =>
       currentChats.map((chat) =>
@@ -1108,9 +1320,27 @@ export function App(): JSX.Element {
     const payloadMessages: ChatMessagePayload[] = nextMessages
       .filter((message) => message.id !== requestId)
       .map((message) => ({ role: message.role, content: message.content }))
-    const messagesWithSkillContext: ChatMessagePayload[] = skillForMessage
-      ? [{ role: 'system', content: createSkillContext(skillForMessage) }, ...payloadMessages]
-      : payloadMessages
+    const memoryContext = createMemoryContext(activeMemoryEntries)
+    const systemMessages: ChatMessagePayload[] = [
+      memoryContext ? { role: 'system', content: memoryContext } : null,
+      skillForMessage ? { role: 'system', content: createSkillContext(skillForMessage) } : null
+    ].filter((message): message is ChatMessagePayload => Boolean(message))
+    const messagesWithSkillContext: ChatMessagePayload[] = [...systemMessages, ...payloadMessages]
+    const usageRecord = createUsageRecord({
+      id: uid('usage'),
+      requestId,
+      chatId: activeChat.id,
+      chatTitle: nextTitle,
+      providerKind: selectedModel.providerKind,
+      providerId: selectedModel.providerId,
+      providerLabel: selectedModel.provider,
+      modelId: selectedModel.modelId,
+      startedAt,
+      promptChars: messagesWithSkillContext.reduce((sum, message) => sum + message.content.length, 0),
+      localOnly: privacySettings.localOnly
+    })
+    usageByRequestRef.current[requestId] = usageRecord.id
+    setUsageRecords((currentRecords) => [usageRecord, ...currentRecords].slice(0, 200))
 
     window.graceAI.startChat({
       requestId,
@@ -1123,17 +1353,62 @@ export function App(): JSX.Element {
       messages: messagesWithSkillContext
     })
 
-    setActiveRequestId(requestId)
+    setActiveRequests((current) => ({ ...current, [requestId]: activeChat.id }))
     setComposerValue('')
     setSelectedSkillId(null)
     setAttachedFiles([])
   }
 
   function stopStreaming(): void {
-    if (!activeRequestId) return
-    stoppedRequestRef.current.add(activeRequestId)
-    window.graceAI.stopChat(activeRequestId)
-    setActiveRequestId(null)
+    if (!activeChatRequestId) return
+    stoppedRequestRef.current.add(activeChatRequestId)
+    window.graceAI.stopChat(activeChatRequestId)
+    setUsageRecords((currentRecords) =>
+      currentRecords.map((record) =>
+        record.id === usageByRequestRef.current[activeChatRequestId] ? finalizeUsageRecord(record, 'stopped') : record
+      )
+    )
+    setChats((currentChats) =>
+      currentChats.map((chat) =>
+        chat.id === activeChat.id
+          ? {
+              ...chat,
+              messages: chat.messages.map((message) =>
+                message.id === activeChatRequestId
+                  ? {
+                      ...message,
+                      pending: false,
+                      content: message.content || 'Остановлено пользователем.',
+                      agentRun: message.agentRun ? advanceAgentRun(message.agentRun, 'done') : undefined
+                    }
+                  : message
+              )
+            }
+          : chat
+      )
+    )
+    setActiveRequests((current) => {
+      const next = { ...current }
+      delete next[activeChatRequestId]
+      return next
+    })
+  }
+
+  function toggleAgentRunExpanded(messageId: string): void {
+    setChats((currentChats) =>
+      currentChats.map((chat) =>
+        chat.id === activeChat.id
+          ? {
+              ...chat,
+              messages: chat.messages.map((message) =>
+                message.id === messageId && message.agentRun
+                  ? { ...message, agentRun: setAgentRunExpanded(message.agentRun, !message.agentRun.expanded) }
+                  : message
+              )
+            }
+          : chat
+      )
+    )
   }
 
   function toggleTool(toolId: string): void {
@@ -1203,6 +1478,91 @@ export function App(): JSX.Element {
     setScheduledTasks((currentTasks) => currentTasks.filter((task) => task.id !== taskId))
   }
 
+  function runScheduledTask(taskId: string): void {
+    const task = scheduledTasks.find((candidate) => candidate.id === taskId)
+    if (!task) return
+
+    setScheduledTasks((currentTasks) =>
+      currentTasks.map((candidate) =>
+        candidate.id === taskId
+          ? {
+              ...candidate,
+              status: 'running',
+              runHistory: [
+                { id: uid('task-run'), status: 'done', at: new Date().toISOString(), chatId: activeChat.id },
+                ...(candidate.runHistory ?? [])
+              ]
+            }
+          : candidate
+      )
+    )
+    sendMessage(task.prompt?.trim() || task.title)
+  }
+
+  function saveMemoryEntry(entry: Partial<MemoryEntry> & Pick<MemoryEntry, 'title' | 'content' | 'kind'>): void {
+    const scope: MemoryEntry['scope'] = activeSpaceId ? 'space' : activeProjectId || activeChat.projectId ? 'project' : 'chat'
+    const scopeId = activeSpaceId ?? activeProjectId ?? activeChat.projectId ?? activeChat.id
+    const now = new Date().toISOString()
+    const nextEntry: MemoryEntry = {
+      id: entry.id ?? uid('memory'),
+      scope: entry.scope ?? scope,
+      scopeId: entry.scopeId ?? scopeId,
+      kind: entry.kind,
+      title: entry.title.trim() || 'Memory',
+      content: entry.content.trim(),
+      enabled: entry.enabled ?? true,
+      createdAt: entry.createdAt ?? now,
+      updatedAt: now
+    }
+
+    setMemoryEntries((currentEntries) => {
+      const exists = currentEntries.some((candidate) => candidate.id === nextEntry.id)
+      return exists
+        ? currentEntries.map((candidate) => (candidate.id === nextEntry.id ? nextEntry : candidate))
+        : [nextEntry, ...currentEntries]
+    })
+  }
+
+  function deleteMemoryEntry(entryId: string): void {
+    setMemoryEntries((currentEntries) => currentEntries.filter((entry) => entry.id !== entryId))
+  }
+
+  function toggleMemoryEntry(entryId: string): void {
+    setMemoryEntries((currentEntries) =>
+      currentEntries.map((entry) => (entry.id === entryId ? { ...entry, enabled: !entry.enabled, updatedAt: new Date().toISOString() } : entry))
+    )
+  }
+
+  function savePromptTemplate(template: Pick<PromptTemplate, 'title' | 'content'> & Partial<PromptTemplate>): void {
+    const now = new Date().toISOString()
+    const nextTemplate: PromptTemplate = {
+      id: template.id ?? uid('prompt'),
+      title: template.title.trim() || 'Prompt',
+      content: template.content.trim(),
+      tags: template.tags ?? [],
+      createdAt: template.createdAt ?? now,
+      updatedAt: now
+    }
+
+    setPromptTemplates((currentTemplates) => {
+      const exists = currentTemplates.some((candidate) => candidate.id === nextTemplate.id)
+      return exists
+        ? currentTemplates.map((candidate) => (candidate.id === nextTemplate.id ? nextTemplate : candidate))
+        : [nextTemplate, ...currentTemplates]
+    })
+  }
+
+  function deletePromptTemplate(templateId: string): void {
+    setPromptTemplates((currentTemplates) => currentTemplates.filter((template) => template.id !== templateId))
+  }
+
+  function insertPromptTemplate(template: PromptTemplate): void {
+    setComposerValue(template.content)
+    setSkillsOpen(false)
+    setCommandPaletteOpen(false)
+    requestAnimationFrame(() => textareaRef.current?.focus())
+  }
+
   function upsertMcpServer(server: Omit<McpServer, 'id' | 'createdAt'> & { id?: string; createdAt?: string }): void {
     const nextServer: McpServer = {
       id: server.id ?? uid('mcp'),
@@ -1231,6 +1591,65 @@ export function App(): JSX.Element {
 
   function deleteMcpServer(serverId: string): void {
     setMcpServers((currentServers) => currentServers.filter((server) => server.id !== serverId))
+  }
+
+  function installMcpPreset(presetId: string): void {
+    const preset = mcpMarketplacePresets.find((candidate) => candidate.id === presetId)
+    if (!preset) return
+
+    upsertMcpServer({
+      name: preset.name,
+      transport: preset.transport,
+      url: preset.url ?? '',
+      command: preset.command ?? '',
+      envText: preset.requiredEnv.map((name) => `${name}=`).join('\n'),
+      enabled: true,
+      sourcePresetId: preset.id,
+      description: preset.description,
+      requiredEnv: preset.requiredEnv
+    })
+  }
+
+  function createCheckpoint(title = activeChat.title): void {
+    const checkpoint: ChatCheckpoint = {
+      id: uid('checkpoint'),
+      chatId: activeChat.id,
+      title: title.trim() || activeChat.title,
+      createdAt: new Date().toISOString(),
+      messageCount: activeChat.messages.length,
+      snapshot: {
+        messages: activeChat.messages,
+        canvasValue,
+        codeWorkspace
+      }
+    }
+
+    setCheckpoints((currentCheckpoints) => [checkpoint, ...currentCheckpoints])
+  }
+
+  function restoreCheckpoint(checkpointId: string): void {
+    const checkpoint = checkpoints.find((candidate) => candidate.id === checkpointId)
+    if (!checkpoint) return
+
+    createCheckpoint(`Before restore · ${activeChat.title}`)
+    setChats((currentChats) =>
+      currentChats.map((chat) =>
+        chat.id === checkpoint.chatId
+          ? {
+              ...chat,
+              messages: checkpoint.snapshot.messages,
+              updatedAt: new Date().toISOString()
+            }
+          : chat
+      )
+    )
+    setCanvasValue(checkpoint.snapshot.canvasValue)
+    setCodeWorkspace(checkpoint.snapshot.codeWorkspace)
+    setActiveChatId(checkpoint.chatId)
+  }
+
+  function deleteCheckpoint(checkpointId: string): void {
+    setCheckpoints((currentCheckpoints) => currentCheckpoints.filter((checkpoint) => checkpoint.id !== checkpointId))
   }
 
   async function runSetupAgent(input: string): Promise<void> {
@@ -1355,6 +1774,7 @@ export function App(): JSX.Element {
         rightPanelMode={rightPanelMode}
         projectsCollapsed={projectsCollapsed}
         spacesCollapsed={spacesCollapsed}
+        runningChatIds={runningChatIds}
         translate={t}
         onToggle={() => setSidebarOpen((open) => !open)}
         onMobileClose={() => setMobileSidebarOpen(false)}
@@ -1384,6 +1804,18 @@ export function App(): JSX.Element {
           setRightPanelMode('tasks')
           setCanvasOpen(true)
         }}
+        onOpenMemory={() => {
+          setRightPanelMode('memory')
+          setCanvasOpen(true)
+        }}
+        onOpenUsage={() => {
+          setRightPanelMode('usage')
+          setCanvasOpen(true)
+        }}
+        onOpenCheckpoints={() => {
+          setRightPanelMode('checkpoints')
+          setCanvasOpen(true)
+        }}
         onOpenProviderSettings={() => setProviderSettingsOpen(true)}
       />
 
@@ -1401,6 +1833,7 @@ export function App(): JSX.Element {
           onToggleSidebar={() => setSidebarOpen((open) => !open)}
           onToggleCanvas={() => setCanvasOpen((open) => !open)}
           onToggleTheme={() => setThemeMode(nextThemeMode)}
+          onOpenCommandPalette={() => setCommandPaletteOpen(true)}
         />
 
         <ChatThread
@@ -1410,6 +1843,7 @@ export function App(): JSX.Element {
           onPromptClick={sendMessage}
           onCopy={(content) => navigator.clipboard?.writeText(content)}
           onRetry={() => activeChat.messages.at(-2)?.content && sendMessage(activeChat.messages.at(-2)!.content)}
+          onToggleAgentRun={toggleAgentRunExpanded}
         />
 
         <Composer
@@ -1461,6 +1895,10 @@ export function App(): JSX.Element {
           libraryFiles={libraryFiles}
           scheduledTasks={scheduledTasks}
           codeWorkspace={codeWorkspace}
+          memoryEntries={activeMemoryEntries}
+          checkpoints={checkpoints.filter((checkpoint) => checkpoint.chatId === activeChat.id)}
+          usageRecords={usageRecords}
+          usageSummary={usageSummary}
           isStreaming={isStreaming}
           translate={t}
           onCanvasChange={setCanvasValue}
@@ -1471,10 +1909,37 @@ export function App(): JSX.Element {
           onCreateScheduledTask={createScheduledTask}
           onToggleScheduledTask={toggleScheduledTask}
           onDeleteScheduledTask={deleteScheduledTask}
+          onRunScheduledTask={runScheduledTask}
+          onSaveMemoryEntry={saveMemoryEntry}
+          onToggleMemoryEntry={toggleMemoryEntry}
+          onDeleteMemoryEntry={deleteMemoryEntry}
+          onCreateCheckpoint={createCheckpoint}
+          onRestoreCheckpoint={restoreCheckpoint}
+          onDeleteCheckpoint={deleteCheckpoint}
+          onClearUsage={() => setUsageRecords([])}
           onCodeWorkspaceChange={setCodeWorkspace}
+          onApplyArtifactDiff={() => {
+            if (!codeWorkspace.pendingDiff) return
+            const appliedDiff = applyArtifactDiff(codeWorkspace.pendingDiff)
+            setCodeWorkspace((currentWorkspace) => ({
+              ...currentWorkspace,
+              content: appliedDiff.nextContent,
+              pendingDiff: undefined,
+              version: (currentWorkspace.version ?? 1) + 1
+            }))
+          }}
+          onRejectArtifactDiff={() => {
+            if (!codeWorkspace.pendingDiff) return
+            const rejectedDiff = rejectArtifactDiff(codeWorkspace.pendingDiff)
+            setCodeWorkspace((currentWorkspace) => ({
+              ...currentWorkspace,
+              pendingDiff: rejectedDiff.status === 'rejected' ? undefined : currentWorkspace.pendingDiff
+            }))
+          }}
           onAskCodeRevision={(instruction, selectedText) => {
             if (isStreaming) return
             const prompt = createCodeRevisionPrompt(codeWorkspace.content, selectedText, instruction)
+            nextRevisionBaseRef.current = codeWorkspace.content
             sendMessage(prompt)
           }}
         />
@@ -1486,13 +1951,19 @@ export function App(): JSX.Element {
           themeMode={themeMode}
           locale={locale}
           responseNotificationsEnabled={responseNotificationsEnabled}
+          privacySettings={privacySettings}
+          modelRouterMode={modelRouterMode}
           mcpServers={mcpServers}
+          usageSummary={usageSummary}
           translate={t}
           onClose={() => setProviderSettingsOpen(false)}
           onThemeChange={setThemeMode}
           onLocaleChange={setLocale}
           onResponseNotificationsChange={setResponseNotificationsEnabled}
+          onPrivacyChange={setPrivacySettings}
+          onModelRouterModeChange={setModelRouterMode}
           onUpsertMcpServer={upsertMcpServer}
+          onInstallMcpPreset={installMcpPreset}
           onUpdateMcpServer={updateMcpServer}
           onDeleteMcpServer={deleteMcpServer}
           onSaved={(provider) => {
@@ -1537,8 +2008,12 @@ export function App(): JSX.Element {
       {skillsOpen ? (
         <SkillsModal
           skills={visibleSkills}
+          prompts={promptTemplates}
           translate={t}
           onClose={() => setSkillsOpen(false)}
+          onSavePrompt={savePromptTemplate}
+          onDeletePrompt={deletePromptTemplate}
+          onInsertPrompt={insertPromptTemplate}
           onInstallSkill={(skill) => {
             setInstalledSkills((currentSkills) =>
               currentSkills.some((currentSkill) => currentSkill.sourceUrl === skill.sourceUrl)
@@ -1548,6 +2023,135 @@ export function App(): JSX.Element {
           }}
         />
       ) : null}
+      {commandPaletteOpen ? (
+        <CommandPalette
+          translate={t}
+          prompts={promptTemplates}
+          modelRouterMode={modelRouterMode}
+          onClose={() => setCommandPaletteOpen(false)}
+          onNewChat={createNewChat}
+          onOpenSettings={() => setProviderSettingsOpen(true)}
+          onOpenSkills={() => setSkillsOpen(true)}
+          onOpenSetupAgent={() => setSetupAgentOpen(true)}
+          onOpenPanel={(mode: RightPanelMode) => {
+            setRightPanelMode(mode)
+            setCanvasOpen(true)
+          }}
+          onToggleTheme={() => setThemeMode(nextThemeMode)}
+          onModelRouterModeChange={setModelRouterMode}
+          onInsertPrompt={insertPromptTemplate}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+function CommandPalette(props: {
+  translate: Translate
+  prompts: PromptTemplate[]
+  modelRouterMode: ModelRouterMode
+  onClose: () => void
+  onNewChat: () => void
+  onOpenSettings: () => void
+  onOpenSkills: () => void
+  onOpenSetupAgent: () => void
+  onOpenPanel: (mode: RightPanelMode) => void
+  onToggleTheme: () => void
+  onModelRouterModeChange: (mode: ModelRouterMode) => void
+  onInsertPrompt: (template: PromptTemplate) => void
+}): JSX.Element {
+  const [query, setQuery] = useState('')
+  const normalizedQuery = query.trim().toLowerCase()
+  const routerModes: Array<{ id: ModelRouterMode; label: string }> = [
+    { id: 'manual', label: props.translate('routerManual') },
+    { id: 'fast', label: props.translate('routerFast') },
+    { id: 'smart', label: props.translate('routerSmart') },
+    { id: 'code', label: props.translate('routerCode') },
+    { id: 'local', label: props.translate('routerLocal') }
+  ]
+  const commands: Array<{ id: string; label: string; detail: string; icon: JSX.Element; action: () => void }> = [
+    { id: 'new-chat', label: props.translate('newChat'), detail: 'Start a clean thread', icon: <Plus size={16} />, action: props.onNewChat },
+    { id: 'settings', label: props.translate('settings'), detail: 'Providers, MCP, privacy', icon: <Settings size={16} />, action: props.onOpenSettings },
+    { id: 'setup-agent', label: props.translate('setupAgent'), detail: 'Ask agent to configure Grace', icon: <Bot size={16} />, action: props.onOpenSetupAgent },
+    { id: 'skills', label: props.translate('skills'), detail: 'Skills and prompt library', icon: <BookOpen size={16} />, action: props.onOpenSkills },
+    { id: 'memory', label: props.translate('memory'), detail: props.translate('memoryHelp'), icon: <BookOpen size={16} />, action: () => props.onOpenPanel('memory') },
+    { id: 'code', label: props.translate('codeWorkspace'), detail: props.translate('codeWorkspaceHelp'), icon: <Code2 size={16} />, action: () => props.onOpenPanel('code') },
+    { id: 'checkpoints', label: props.translate('checkpoints'), detail: props.translate('checkpointsHelp'), icon: <History size={16} />, action: () => props.onOpenPanel('checkpoints') },
+    { id: 'usage', label: props.translate('usage'), detail: props.translate('usageHelp'), icon: <BarChart3 size={16} />, action: () => props.onOpenPanel('usage') },
+    { id: 'theme', label: props.translate('theme'), detail: 'Toggle light/dark', icon: <Sun size={16} />, action: props.onToggleTheme }
+  ]
+  const visibleCommands = commands.filter((command) =>
+    normalizedQuery ? `${command.label} ${command.detail}`.toLowerCase().includes(normalizedQuery) : true
+  )
+  const visiblePrompts = filterPromptTemplates(props.prompts, query).slice(0, 5)
+
+  function run(action: () => void): void {
+    action()
+    props.onClose()
+  }
+
+  return (
+    <div className="modal-backdrop command-backdrop" role="presentation" onMouseDown={props.onClose}>
+      <section className="command-palette" role="dialog" aria-modal="true" aria-labelledby="command-palette-title" onMouseDown={(event) => event.stopPropagation()}>
+        <header className="command-header">
+          <Search size={17} />
+          <input
+            autoFocus
+            value={query}
+            placeholder={props.translate('commandPalettePlaceholder')}
+            aria-label={props.translate('commandPalette')}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') props.onClose()
+              if (event.key === 'Enter' && visibleCommands[0]) run(visibleCommands[0].action)
+            }}
+          />
+        </header>
+
+        <div className="command-section-title" id="command-palette-title">{props.translate('commandPalette')}</div>
+        <div className="command-list">
+          {visibleCommands.map((command) => (
+            <button key={command.id} className="command-row" type="button" onClick={() => run(command.action)}>
+              {command.icon}
+              <span>
+                <strong>{command.label}</strong>
+                <small>{command.detail}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+
+        <div className="command-section-title">{props.translate('modelRouter')}</div>
+        <div className="router-mode-row">
+          {routerModes.map((mode) => (
+            <button
+              key={mode.id}
+              className={props.modelRouterMode === mode.id ? 'active' : ''}
+              type="button"
+              onClick={() => run(() => props.onModelRouterModeChange(mode.id))}
+            >
+              {mode.label}
+            </button>
+          ))}
+        </div>
+
+        {visiblePrompts.length > 0 ? (
+          <>
+            <div className="command-section-title">{props.translate('promptLibrary')}</div>
+            <div className="command-list">
+              {visiblePrompts.map((prompt) => (
+                <button key={prompt.id} className="command-row" type="button" onClick={() => run(() => props.onInsertPrompt(prompt))}>
+                  <FileText size={16} />
+                  <span>
+                    <strong>{prompt.title}</strong>
+                    <small>{prompt.tags.join(', ') || prompt.content.slice(0, 54)}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </>
+        ) : null}
+      </section>
     </div>
   )
 }
@@ -1565,6 +2169,7 @@ function ProjectSidebar(props: {
   rightPanelMode: RightPanelMode
   projectsCollapsed: boolean
   spacesCollapsed: boolean
+  runningChatIds: Set<string>
   translate: Translate
   onToggle: () => void
   onMobileClose: () => void
@@ -1588,6 +2193,9 @@ function ProjectSidebar(props: {
   onOpenSetupAgent: () => void
   onOpenLibrary: () => void
   onOpenTasks: () => void
+  onOpenMemory: () => void
+  onOpenUsage: () => void
+  onOpenCheckpoints: () => void
   onOpenProviderSettings: () => void
 }): JSX.Element {
   const t = props.translate
@@ -1634,6 +2242,7 @@ function ProjectSidebar(props: {
                   active={chat.id === props.activeChatId}
                   projects={props.projects}
                   translate={t}
+                  isRunning={props.runningChatIds.has(chat.id)}
                   onSelect={props.onSelectChat}
                   onMoveToProject={props.onMoveChatToProject}
                   onTogglePinned={props.onToggleChatPinned}
@@ -1702,6 +2311,7 @@ function ProjectSidebar(props: {
                   projects={props.projects}
                   spaces={props.spaces}
                   translate={t}
+                  isRunning={props.runningChatIds.has(chat.id)}
                   onSelect={props.onSelectChat}
                   onMoveToProject={props.onMoveChatToProject}
                   onMoveToSpace={props.onMoveChatToSpace}
@@ -1761,6 +2371,30 @@ function ProjectSidebar(props: {
             >
               <Clock3 size={15} />
               <span>{t('scheduledTasks')}</span>
+            </button>
+            <button
+              className={`sidebar-row ${props.rightPanelMode === 'memory' ? 'active' : ''}`}
+              type="button"
+              onClick={props.onOpenMemory}
+            >
+              <BookOpen size={15} />
+              <span>{t('memory')}</span>
+            </button>
+            <button
+              className={`sidebar-row ${props.rightPanelMode === 'checkpoints' ? 'active' : ''}`}
+              type="button"
+              onClick={props.onOpenCheckpoints}
+            >
+              <History size={15} />
+              <span>{t('checkpoints')}</span>
+            </button>
+            <button
+              className={`sidebar-row ${props.rightPanelMode === 'usage' ? 'active' : ''}`}
+              type="button"
+              onClick={props.onOpenUsage}
+            >
+              <BarChart3 size={15} />
+              <span>{t('usage')}</span>
             </button>
             <button className="sidebar-row" type="button" onClick={props.onOpenProviderSettings}>
               <Settings size={15} />
@@ -1933,6 +2567,7 @@ function SidebarRow(props: {
   projects?: Project[]
   spaces?: Space[]
   translate?: Translate
+  isRunning?: boolean
   onSelect: (chatId: string) => void
   onMoveToProject?: (chatId: string, projectId: string | null) => void
   onMoveToSpace?: (chatId: string, spaceId: string) => void
@@ -1950,7 +2585,7 @@ function SidebarRow(props: {
   return (
     <div ref={shellRef} className={`sidebar-row-shell ${props.active ? 'active' : ''}`}>
       <button className="sidebar-row-main" type="button" onClick={() => props.onSelect(props.chat.id)}>
-        <span className="row-dot" />
+        <span className={`row-dot ${props.isRunning ? 'running' : ''}`} />
         <span>{props.chat.title}</span>
       </button>
       <button
@@ -2065,6 +2700,7 @@ function TopBar(props: {
   onToggleSidebar: () => void
   onToggleCanvas: () => void
   onToggleTheme: () => void
+  onOpenCommandPalette: () => void
 }): JSX.Element {
   const themeLabel = props.themeMode === 'dark' ? props.translate('light') : props.translate('dark')
 
@@ -2089,6 +2725,10 @@ function TopBar(props: {
         </div>
       </div>
       <div className="topbar-actions">
+        <button className="text-button desktop-only" type="button" onClick={props.onOpenCommandPalette}>
+          <Search size={15} />
+          Cmd K
+        </button>
         <button className="icon-button" type="button" aria-label={themeLabel} title={themeLabel} onClick={props.onToggleTheme}>
           {props.themeMode === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
         </button>
@@ -2113,6 +2753,7 @@ function ChatThread(props: {
   onPromptClick: (value: string) => void
   onCopy: (content: string) => void
   onRetry: () => void
+  onToggleAgentRun: (messageId: string) => void
 }): JSX.Element {
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
@@ -2155,6 +2796,7 @@ function ChatThread(props: {
             translate={props.translate}
             onCopy={props.onCopy}
             onRetry={props.onRetry}
+            onToggleAgentRun={props.onToggleAgentRun}
           />
         ))}
         {props.isStreaming ? (
@@ -2173,6 +2815,7 @@ function MessageBubble(props: {
   translate: Translate
   onCopy: (content: string) => void
   onRetry: () => void
+  onToggleAgentRun: (messageId: string) => void
 }): JSX.Element {
   const { message, onCopy, onRetry } = props
 
@@ -2186,17 +2829,26 @@ function MessageBubble(props: {
           </span>
         ) : null}
         {message.role === 'assistant' ? (
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={{
-              code({ className, children }) {
-                const language = /language-(\w+)/.exec(className || '')?.[1]
-                return language ? <CodeBlock language={language} value={String(children).replace(/\n$/, '')} /> : <code>{children}</code>
-              }
-            }}
-          >
-            {message.content || ' '}
-          </ReactMarkdown>
+          <>
+            {message.agentRun ? (
+              <AgentRunView
+                run={message.agentRun}
+                translate={props.translate}
+                onToggle={() => props.onToggleAgentRun(message.id)}
+              />
+            ) : null}
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                code({ className, children }) {
+                  const language = /language-(\w+)/.exec(className || '')?.[1]
+                  return language ? <CodeBlock language={language} value={String(children).replace(/\n$/, '')} /> : <code>{children}</code>
+                }
+              }}
+            >
+              {message.content || ' '}
+            </ReactMarkdown>
+          </>
         ) : (
           <p>{message.content}</p>
         )}
@@ -2223,6 +2875,35 @@ function MessageBubble(props: {
         </button>
       </div>
     </article>
+  )
+}
+
+function AgentRunView(props: { run: AgentRun; translate: Translate; onToggle: () => void }): JSX.Element {
+  const progress = getAgentRunProgress(props.run)
+
+  return (
+    <div className={`agent-run ${props.run.status}`}>
+      <button className="agent-run-summary" type="button" onClick={props.onToggle}>
+        <ChevronRight className={props.run.expanded ? 'expanded' : ''} size={14} />
+        <span>{props.translate('agentSteps')}</span>
+        <small>
+          {progress.done}/{progress.total} · {props.run.status}
+        </small>
+      </button>
+      {props.run.expanded ? (
+        <div className="agent-run-steps">
+          {props.run.steps.map((step) => (
+            <div className={`agent-step ${step.status}`} key={step.id}>
+              <span className="agent-step-dot" />
+              <span>
+                <strong>{step.title}</strong>
+                {step.detail ? <small>{step.detail}</small> : null}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -2772,13 +3453,19 @@ function ProviderSettingsModal(props: {
   themeMode: ThemeMode
   locale: Locale
   responseNotificationsEnabled: boolean
+  privacySettings: PrivacySettings
+  modelRouterMode: ModelRouterMode
   mcpServers: McpServer[]
+  usageSummary: ReturnType<typeof summarizeUsage>
   translate: Translate
   onClose: () => void
   onThemeChange: (themeMode: ThemeMode) => void
   onLocaleChange: (locale: Locale) => void
   onResponseNotificationsChange: (enabled: boolean) => void
+  onPrivacyChange: (settings: PrivacySettings) => void
+  onModelRouterModeChange: (mode: ModelRouterMode) => void
   onUpsertMcpServer: (server: Omit<McpServer, 'id' | 'createdAt'> & { id?: string; createdAt?: string }) => void
+  onInstallMcpPreset: (presetId: string) => void
   onUpdateMcpServer: (serverId: string, patch: Partial<McpServer>) => void
   onDeleteMcpServer: (serverId: string) => void
   onSaved: (provider: CustomProviderSummary) => void
@@ -2938,9 +3625,53 @@ function ProviderSettingsModal(props: {
           </button>
         </section>
 
+        <section className="settings-section" aria-labelledby="router-settings-title">
+          <div>
+            <strong id="router-settings-title">{props.translate('modelRouter')}</strong>
+            <p>{props.translate('routerHelp')}</p>
+          </div>
+          <div className="theme-segmented language-segmented" role="group" aria-label={props.translate('modelRouter')}>
+            {([
+              ['manual', props.translate('routerManual')],
+              ['fast', props.translate('routerFast')],
+              ['smart', props.translate('routerSmart')],
+              ['code', props.translate('routerCode')],
+              ['local', props.translate('routerLocal')]
+            ] as Array<[ModelRouterMode, string]>).map(([mode, label]) => (
+              <button key={mode} className={props.modelRouterMode === mode ? 'active' : ''} type="button" onClick={() => props.onModelRouterModeChange(mode)}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="settings-section" aria-labelledby="privacy-settings-title">
+          <div>
+            <strong id="privacy-settings-title">{props.translate('privacyMode')}</strong>
+            <p>{props.translate('privacyHelp')}</p>
+          </div>
+          <button
+            className={`mini-toggle ${props.privacySettings.localOnly ? 'active' : ''}`}
+            type="button"
+            aria-pressed={props.privacySettings.localOnly}
+            onClick={() => props.onPrivacyChange({ ...props.privacySettings, localOnly: !props.privacySettings.localOnly })}
+          >
+            <Shield size={14} />
+            {props.privacySettings.localOnly ? props.translate('enabled') : props.translate('disabled')}
+          </button>
+        </section>
+
+        <section className="settings-section" aria-labelledby="usage-settings-title">
+          <div>
+            <strong id="usage-settings-title">{props.translate('usage')}</strong>
+            <p>{props.usageSummary.totalRequests} requests · {props.usageSummary.inputTokensEstimate + props.usageSummary.outputTokensEstimate} estimated tokens.</p>
+          </div>
+          <BarChart3 size={18} />
+        </section>
+
         <div className="settings-subheader">
           <strong>{props.translate('providerSettings')}</strong>
-          <p>Models load from the provider after the key is saved.</p>
+          <p>{props.translate('providerModelHelp')}</p>
         </div>
 
         <div className="provider-grid">
@@ -3005,8 +3736,28 @@ function ProviderSettingsModal(props: {
         </div>
 
         <div className="settings-subheader">
-          <strong>{props.translate('mcpServers')}</strong>
+          <strong>{props.translate('mcpMarketplace')}</strong>
           <p>{props.translate('mcpServersHelp')}</p>
+        </div>
+
+        <div className="provider-grid mcp-marketplace-grid">
+          {mcpMarketplacePresets.map((preset) => (
+            <button
+              key={preset.id}
+              className="provider-card"
+              type="button"
+              onClick={() => props.onInstallMcpPreset(preset.id)}
+            >
+              <strong>{preset.name}</strong>
+              <span>{preset.description}</span>
+              {preset.requiredEnv.length ? <small>{preset.requiredEnv.join(' · ')}</small> : <small>{props.translate('noSecretsRequired')}</small>}
+            </button>
+          ))}
+        </div>
+
+        <div className="settings-subheader">
+          <strong>{props.translate('mcpServers')}</strong>
+          <p>{props.translate('mcpCommandHelp')}</p>
         </div>
 
         <div className="mcp-list">
@@ -3148,11 +3899,19 @@ function SetupAgentModal(props: {
 
 function SkillsModal(props: {
   skills: SkillSummary[]
+  prompts: PromptTemplate[]
   translate: Translate
   onClose: () => void
+  onSavePrompt: (template: Pick<PromptTemplate, 'title' | 'content'> & Partial<PromptTemplate>) => void
+  onDeletePrompt: (templateId: string) => void
+  onInsertPrompt: (template: PromptTemplate) => void
   onInstallSkill: (skill: SkillSummary) => void
 }): JSX.Element {
   const [draft, setDraft] = useState<SkillInstallDraft>({ url: '', status: 'idle' })
+  const [promptTitle, setPromptTitle] = useState('')
+  const [promptContent, setPromptContent] = useState('')
+  const [promptQuery, setPromptQuery] = useState('')
+  const filteredPrompts = filterPromptTemplates(props.prompts, promptQuery)
 
   function installFromUrl(): void {
     const url = draft.url.trim()
@@ -3192,12 +3951,53 @@ function SkillsModal(props: {
         <header className="settings-header">
           <div>
             <h2 id="skills-title">{props.translate('skills')}</h2>
-            <p>Preset skills and GitHub skill links available to Grace.</p>
+            <p>Preset skills, GitHub skill links, and local prompt templates.</p>
           </div>
           <button className="icon-button" type="button" aria-label={props.translate('close')} title={props.translate('close')} onClick={props.onClose}>
             <X size={18} />
           </button>
         </header>
+
+        <div className="skill-install-box">
+          <label>
+            <span>Prompt library</span>
+            <input value={promptQuery} type="search" placeholder="Search prompts" onChange={(event) => setPromptQuery(event.target.value)} />
+          </label>
+          <div className="prompt-create-grid">
+            <input value={promptTitle} placeholder="Prompt title" onChange={(event) => setPromptTitle(event.target.value)} />
+            <textarea value={promptContent} placeholder="Prompt content" onChange={(event) => setPromptContent(event.target.value)} />
+            <button
+              className="primary-button"
+              type="button"
+              disabled={!promptContent.trim()}
+              onClick={() => {
+                props.onSavePrompt({ title: promptTitle, content: promptContent })
+                setPromptTitle('')
+                setPromptContent('')
+              }}
+            >
+              Save prompt
+            </button>
+          </div>
+        </div>
+
+        <div className="skill-list prompt-list">
+          {filteredPrompts.map((prompt) => (
+            <article className="skill-card" key={prompt.id}>
+              <div className="skill-card-header">
+                <strong>{prompt.title}</strong>
+                <span>{prompt.tags.join(' · ') || 'prompt'}</span>
+              </div>
+              <p>{prompt.content}</p>
+              <div className="inline-actions">
+                <button className="text-button" type="button" onClick={() => props.onInsertPrompt(prompt)}>Insert</button>
+                <button className="icon-button small" type="button" onClick={() => props.onDeletePrompt(prompt.id)}>
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
 
         <div className="skill-install-box">
           <label>
@@ -3257,6 +4057,10 @@ function RightPanel(props: {
   libraryFiles: LibraryFile[]
   scheduledTasks: ScheduledTask[]
   codeWorkspace: CodeWorkspace
+  memoryEntries: MemoryEntry[]
+  checkpoints: ChatCheckpoint[]
+  usageRecords: UsageRecord[]
+  usageSummary: ReturnType<typeof summarizeUsage>
   isStreaming: boolean
   translate: Translate
   onCanvasChange: (value: string) => void
@@ -3267,7 +4071,17 @@ function RightPanel(props: {
   onCreateScheduledTask: (title: string, schedule: string) => void
   onToggleScheduledTask: (taskId: string) => void
   onDeleteScheduledTask: (taskId: string) => void
+  onRunScheduledTask: (taskId: string) => void
+  onSaveMemoryEntry: (entry: Partial<MemoryEntry> & Pick<MemoryEntry, 'title' | 'content' | 'kind'>) => void
+  onToggleMemoryEntry: (entryId: string) => void
+  onDeleteMemoryEntry: (entryId: string) => void
+  onCreateCheckpoint: () => void
+  onRestoreCheckpoint: (checkpointId: string) => void
+  onDeleteCheckpoint: (checkpointId: string) => void
+  onClearUsage: () => void
   onCodeWorkspaceChange: React.Dispatch<React.SetStateAction<CodeWorkspace>>
+  onApplyArtifactDiff: () => void
+  onRejectArtifactDiff: () => void
   onAskCodeRevision: (instruction: string, selectedText: string) => void
 }): JSX.Element {
   const panelTitle =
@@ -3277,6 +4091,12 @@ function RightPanel(props: {
       ? props.translate('scheduledTasks')
       : props.mode === 'code'
       ? props.translate('codeWorkspace')
+      : props.mode === 'memory'
+      ? 'Memory'
+      : props.mode === 'checkpoints'
+      ? 'Checkpoints'
+      : props.mode === 'usage'
+      ? 'Usage'
       : props.translate('workingCanvas')
 
   return (
@@ -3294,6 +4114,12 @@ function RightPanel(props: {
               ? props.translate('libraryHelp')
               : props.mode === 'tasks'
               ? props.translate('tasksHelp')
+              : props.mode === 'memory'
+              ? 'Project, space, and chat context injected into prompts.'
+              : props.mode === 'checkpoints'
+              ? 'Restore safe snapshots of this chat.'
+              : props.mode === 'usage'
+              ? 'Local request and token estimates.'
               : 'Version 1 · Editable draft'}
           </span>
         </div>
@@ -3328,6 +4154,18 @@ function RightPanel(props: {
           <Code2 size={14} />
           {props.translate('code')}
         </button>
+        <button className={props.mode === 'memory' ? 'active' : ''} type="button" onClick={() => props.onModeChange('memory')}>
+          <BookOpen size={14} />
+          {props.translate('memory')}
+        </button>
+        <button className={props.mode === 'checkpoints' ? 'active' : ''} type="button" onClick={() => props.onModeChange('checkpoints')}>
+          <History size={14} />
+          {props.translate('checkpoints')}
+        </button>
+        <button className={props.mode === 'usage' ? 'active' : ''} type="button" onClick={() => props.onModeChange('usage')}>
+          <BarChart3 size={14} />
+          {props.translate('usage')}
+        </button>
       </div>
       {props.mode === 'library' ? (
         <LibraryPanel
@@ -3343,6 +4181,7 @@ function RightPanel(props: {
           onCreateTask={props.onCreateScheduledTask}
           onToggleTask={props.onToggleScheduledTask}
           onDeleteTask={props.onDeleteScheduledTask}
+          onRunTask={props.onRunScheduledTask}
         />
       ) : props.mode === 'code' ? (
         <CodeWorkspacePanel
@@ -3350,8 +4189,28 @@ function RightPanel(props: {
           isStreaming={props.isStreaming}
           translate={props.translate}
           onChange={props.onCodeWorkspaceChange}
+          onApplyDiff={props.onApplyArtifactDiff}
+          onRejectDiff={props.onRejectArtifactDiff}
           onAskRevision={props.onAskCodeRevision}
         />
+      ) : props.mode === 'memory' ? (
+        <MemoryPanel
+          entries={props.memoryEntries}
+          translate={props.translate}
+          onSave={props.onSaveMemoryEntry}
+          onToggle={props.onToggleMemoryEntry}
+          onDelete={props.onDeleteMemoryEntry}
+        />
+      ) : props.mode === 'checkpoints' ? (
+        <CheckpointsPanel
+          checkpoints={props.checkpoints}
+          translate={props.translate}
+          onCreate={props.onCreateCheckpoint}
+          onRestore={props.onRestoreCheckpoint}
+          onDelete={props.onDeleteCheckpoint}
+        />
+      ) : props.mode === 'usage' ? (
+        <UsagePanel records={props.usageRecords} summary={props.usageSummary} translate={props.translate} onClear={props.onClearUsage} />
       ) : (
         <textarea value={props.canvasValue} onChange={(event) => props.onCanvasChange(event.target.value)} aria-label="Canvas document" />
       )}
@@ -3405,6 +4264,7 @@ function ScheduledTasksPanel(props: {
   onCreateTask: (title: string, schedule: string) => void
   onToggleTask: (taskId: string) => void
   onDeleteTask: (taskId: string) => void
+  onRunTask: (taskId: string) => void
 }): JSX.Element {
   const [title, setTitle] = useState('')
   const [schedule, setSchedule] = useState('')
@@ -3441,8 +4301,12 @@ function ScheduledTasksPanel(props: {
               </button>
               <div>
                 <strong>{task.title}</strong>
-                <span>{task.schedule}</span>
+                <span>{task.schedule} · {task.status ?? 'idle'}</span>
               </div>
+              <button className="text-button small" type="button" onClick={() => props.onRunTask(task.id)}>
+                <Send size={13} />
+                {props.translate('runNow')}
+              </button>
               <button className="icon-button small" type="button" aria-label={props.translate('delete')} title={props.translate('delete')} onClick={() => props.onDeleteTask(task.id)}>
                 <Trash2 size={14} />
               </button>
@@ -3454,11 +4318,136 @@ function ScheduledTasksPanel(props: {
   )
 }
 
+function MemoryPanel(props: {
+  entries: MemoryEntry[]
+  translate: Translate
+  onSave: (entry: Partial<MemoryEntry> & Pick<MemoryEntry, 'title' | 'content' | 'kind'>) => void
+  onToggle: (entryId: string) => void
+  onDelete: (entryId: string) => void
+}): JSX.Element {
+  const [title, setTitle] = useState('')
+  const [content, setContent] = useState('')
+  const [kind, setKind] = useState<MemoryEntry['kind']>('instruction')
+
+  function submit(): void {
+    props.onSave({ title, content, kind })
+    setTitle('')
+    setContent('')
+  }
+
+  return (
+    <div className="right-panel-content">
+      <div className="task-create-box vertical">
+        <select value={kind} onChange={(event) => setKind(event.target.value as MemoryEntry['kind'])}>
+          <option value="instruction">Instruction</option>
+          <option value="decision">Decision</option>
+          <option value="fact">Fact</option>
+          <option value="style">Style</option>
+        </select>
+        <input value={title} placeholder={props.translate('memoryTitle')} onChange={(event) => setTitle(event.target.value)} />
+        <textarea value={content} placeholder={props.translate('memoryPlaceholder')} onChange={(event) => setContent(event.target.value)} />
+        <button className="primary-button" type="button" disabled={!content.trim()} onClick={submit}>
+          <Plus size={15} />
+          {props.translate('addMemory')}
+        </button>
+      </div>
+
+      <div className="task-list">
+        {props.entries.map((entry) => (
+          <article className={`task-card memory-card ${entry.enabled ? '' : 'done'}`} key={entry.id}>
+            <button className="task-check" type="button" onClick={() => props.onToggle(entry.id)}>
+              {entry.enabled ? <Check size={15} /> : null}
+            </button>
+            <div>
+              <strong>{entry.title}</strong>
+              <span>{entry.kind} · {entry.content}</span>
+            </div>
+            <button className="icon-button small" type="button" onClick={() => props.onDelete(entry.id)}>
+              <Trash2 size={14} />
+            </button>
+          </article>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function CheckpointsPanel(props: {
+  checkpoints: ChatCheckpoint[]
+  translate: Translate
+  onCreate: () => void
+  onRestore: (checkpointId: string) => void
+  onDelete: (checkpointId: string) => void
+}): JSX.Element {
+  return (
+    <div className="right-panel-content">
+      <button className="primary-button" type="button" onClick={() => props.onCreate()}>
+        <History size={15} />
+        {props.translate('createCheckpoint')}
+      </button>
+      <div className="task-list">
+        {props.checkpoints.map((checkpoint) => (
+          <article className="task-card checkpoint-card" key={checkpoint.id}>
+            <div>
+              <strong>{checkpoint.title}</strong>
+              <span>{checkpoint.messageCount} messages · {new Date(checkpoint.createdAt).toLocaleString()}</span>
+            </div>
+            <button className="text-button small" type="button" onClick={() => props.onRestore(checkpoint.id)}>
+              {props.translate('restoreCheckpoint')}
+            </button>
+            <button className="icon-button small" type="button" onClick={() => props.onDelete(checkpoint.id)}>
+              <Trash2 size={14} />
+            </button>
+          </article>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function UsagePanel(props: { records: UsageRecord[]; summary: ReturnType<typeof summarizeUsage>; translate: Translate; onClear: () => void }): JSX.Element {
+  return (
+    <div className="right-panel-content">
+      <div className="usage-grid">
+        <MetricCard label="Requests" value={props.summary.totalRequests.toString()} />
+        <MetricCard label="Input tokens" value={props.summary.inputTokensEstimate.toString()} />
+        <MetricCard label="Output tokens" value={props.summary.outputTokensEstimate.toString()} />
+        <MetricCard label="Avg latency" value={`${props.summary.averageLatencyMs} ms`} />
+      </div>
+      <button className="text-button" type="button" onClick={props.onClear}>
+        <Trash2 size={14} />
+        {props.translate('clearUsage')}
+      </button>
+      <div className="task-list">
+        {props.records.slice(0, 20).map((record) => (
+          <article className="task-card usage-record" key={record.id}>
+            <div>
+              <strong>{record.modelId}</strong>
+              <span>{record.status} · {record.inputTokensEstimate}/{record.outputTokensEstimate} tokens · {record.providerLabel ?? record.providerKind}</span>
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function MetricCard(props: { label: string; value: string }): JSX.Element {
+  return (
+    <div className="metric-card">
+      <span>{props.label}</span>
+      <strong>{props.value}</strong>
+    </div>
+  )
+}
+
 function CodeWorkspacePanel(props: {
   workspace: CodeWorkspace
   isStreaming: boolean
   translate: Translate
   onChange: React.Dispatch<React.SetStateAction<CodeWorkspace>>
+  onApplyDiff: () => void
+  onRejectDiff: () => void
   onAskRevision: (instruction: string, selectedText: string) => void
 }): JSX.Element {
   const canPreviewHtml = /^(html|htm)$/.test(props.workspace.language.toLowerCase()) || /<!doctype html|<html[\s>]|<body[\s>]/i.test(props.workspace.content)
@@ -3469,9 +4458,21 @@ function CodeWorkspacePanel(props: {
       <div className="code-editor-pane">
         <div className="code-workspace-meta">
           <Code2 size={15} />
-          <span>{props.workspace.language || 'text'}</span>
+          <span>{props.workspace.language || 'text'} · v{props.workspace.version ?? 1}</span>
           {props.isStreaming ? <span className="streaming-dot">{props.translate('live')}</span> : null}
         </div>
+        {props.workspace.pendingDiff ? (
+          <div className="artifact-diff-box">
+            <strong>Pending diff</strong>
+            <span>
+              +{props.workspace.pendingDiff.addedLines} / -{props.workspace.pendingDiff.removedLines}
+            </span>
+            <div className="inline-actions">
+              <button className="primary-button" type="button" onClick={props.onApplyDiff}>Apply</button>
+              <button className="text-button" type="button" onClick={props.onRejectDiff}>Reject</button>
+            </div>
+          </div>
+        ) : null}
         <textarea
           value={props.workspace.content}
           spellCheck={false}
