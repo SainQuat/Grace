@@ -31,10 +31,18 @@
   --scrim: rgba(0, 0, 0, 0.52);
   --code-bg: #151311;
   --code-header: #211d18;
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --z-modal: 70;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
   letter-spacing: 0;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 :root[data-theme="light"] {
@@ -116,6 +124,16 @@ button:hover:not(:disabled) {
 button:focus-visible,
 textarea:focus-visible,
 input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+select:focus-visible,
+[role="tab"]:focus-visible,
+.composer-shell:focus-within,
+.search-box:focus-within,
+.command-palette input:focus-visible,
+.model-search input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -386,6 +404,12 @@ input:focus-visible {
   font-size: 12px;
 }
 
+.sidebar-empty-state {
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .sidebar-row:hover,
 .icon-button:hover,
 .text-button:hover,
@@ -550,6 +574,25 @@ input:focus-visible {
   min-width: 0;
 }
 
+.route-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.route-chip strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .title-block {
   min-width: 0;
 }
@@ -689,8 +732,8 @@ input:focus-visible {
 
 .empty-content {
   width: min(100%, 620px);
-  margin: 18px auto 0;
-  padding: 14px 0 0;
+  margin: 8px auto 0;
+  padding: 8px 0 0;
   text-align: left;
 }
 
@@ -1113,7 +1156,7 @@ input:focus-visible {
   overflow: auto;
   background: var(--surface-elevated);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   box-shadow: var(--shadow-modal);
 }
 
@@ -1140,6 +1183,47 @@ input:focus-visible {
   color: var(--muted);
 }
 
+.settings-tabs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 6px;
+  padding-bottom: 4px;
+}
+
+.settings-tabs button {
+  min-height: 32px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.settings-tabs button.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+
+.settings-tab-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-static-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+
 .settings-section {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1148,7 +1232,7 @@ input:focus-visible {
   padding: 12px;
   background: var(--surface-muted);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-md);
 }
 
 .settings-section strong {
@@ -1354,7 +1438,7 @@ input:focus-visible {
   padding: 10px 12px;
   white-space: pre-wrap;
   background: var(--surface-muted);
-  border-radius: 12px;
+  border-radius: var(--r-md);
 }
 
 .setup-agent-message.user {
@@ -1375,7 +1459,7 @@ input:focus-visible {
   padding: 10px;
   background: var(--surface-muted);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-md);
 }
 
 .setup-agent-composer textarea {
@@ -1386,7 +1470,40 @@ input:focus-visible {
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-sm);
+}
+
+.setup-agent-preview {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: var(--surface-muted);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--r-md);
+}
+
+.setup-agent-preview p,
+.setup-agent-preview ul {
+  margin: 0;
+  color: var(--muted);
+}
+
+.setup-agent-preview ul {
+  display: grid;
+  gap: 4px;
+  padding-left: 18px;
+}
+
+.setup-agent-preview pre {
+  max-height: 140px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  color: var(--text);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  white-space: pre-wrap;
 }
 
 .skills-modal {
@@ -1707,8 +1824,8 @@ input:focus-visible {
 .canvas-panel {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
-  width: min(42vw, 560px);
-  min-width: 390px;
+  width: min(36vw, 430px);
+  min-width: 340px;
   height: 100vh;
   background: var(--surface-elevated);
   border-left: 1px solid var(--border);
@@ -1719,8 +1836,8 @@ input:focus-visible {
 }
 
 .code-workspace-panel {
-  width: min(52vw, 780px);
-  min-width: 460px;
+  width: min(42vw, 620px);
+  min-width: 380px;
 }
 
 .canvas-header {
