@@ -1,6 +1,6 @@
 # Grace
 
-Grace is an AI application in early setup.
+Grace is a local-first desktop AI workspace for chat, provider routing, agent steps, code artifacts, and MCP-ready tool configuration.
 
 ## Development
 
@@ -11,7 +11,7 @@ Stack:
 - Electron desktop shell
 - React + TypeScript + Vite renderer
 - Safe preload IPC bridge for chat streaming
-- Local browser storage for v0.1 chat state
+- Local-first desktop state with secure main-process credential storage
 
 Common commands:
 
@@ -19,7 +19,7 @@ Common commands:
 ./scripts/setup.sh
 ./scripts/dev.sh
 ./scripts/ci.sh
-./scripts/release.sh 0.1.0
+./scripts/release.sh 1.0.0
 ```
 
 Direct app commands:
@@ -42,7 +42,7 @@ GRACE_PROVIDER_BASE_URL=https://api.example.com/v1 GRACE_PROVIDER_API_KEY=... np
 ## Delivery
 
 - PRs run CI through `.github/workflows/ci.yml`.
-- Tags like `v0.1.0` create GitHub Releases through `.github/workflows/release.yml`.
+- Tags like `v1.0.0` create GitHub Releases through `.github/workflows/release.yml`.
 - GitHub Releases include unsigned macOS `.dmg` installers.
 - Deployments are represented through GitHub Environments in `.github/workflows/deploy.yml`.
 - Real deployment provider wiring belongs in `scripts/deploy.sh`.

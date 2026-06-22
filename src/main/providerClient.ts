@@ -1,4 +1,10 @@
-import type { ChatMessagePayload, ChatRequestPayload, ProviderApiFormat, ProviderModel } from '../shared/types'
+import type {
+  ChatMessagePayload,
+  ChatRequestPayload,
+  ProviderApiFormat,
+  ProviderHealthResult,
+  ProviderModel
+} from '../shared/types'
 
 export function normalizeBaseUrl(value: string): string {
   const trimmedValue = value.trim().replace(/\/+$/, '')
@@ -55,14 +61,20 @@ export function parseOpenAIModelList(payload: unknown): ProviderModel[] {
     .filter((model): model is ProviderModel => Boolean(model))
 }
 
-export async function fetchProviderModels(baseUrl: string, apiKey: string, apiFormat: ProviderApiFormat = 'openai'): Promise<ProviderModel[]> {
+export async function fetchProviderModels(
+  baseUrl: string,
+  apiKey: string,
+  apiFormat: ProviderApiFormat = 'openai',
+  signal?: AbortSignal
+): Promise<ProviderModel[]> {
   if (apiFormat === 'anthropic') {
-    return fetchAnthropicModels(baseUrl, apiKey)
+    return fetchAnthropicModels(baseUrl, apiKey, signal)
   }
 
   const response = await fetch(buildProviderUrl(baseUrl, '/models'), {
     method: 'GET',
-    headers: providerHeaders(apiKey)
+    headers: providerHeaders(apiKey),
+    signal
   })
 
   if (!response.ok) {
@@ -77,6 +89,60 @@ export async function fetchProviderModels(baseUrl: string, apiKey: string, apiFo
   }
 
   return models
+}
+
+export async function checkProviderHealth(args: {
+  providerId: string
+  label?: string
+  baseUrl: string
+  apiKey: string
+  apiFormat?: ProviderApiFormat
+  selectedModelId?: string
+  timeoutMs?: number
+}): Promise<ProviderHealthResult> {
+  const startedAt = Date.now()
+  const abortController = new AbortController()
+  const timeout = setTimeout(() => abortController.abort(), args.timeoutMs ?? 10_000)
+  let normalizedBaseUrl = args.baseUrl
+
+  try {
+    normalizedBaseUrl = normalizeBaseUrl(args.baseUrl)
+    const models = await fetchProviderModels(
+      normalizedBaseUrl,
+      args.apiKey,
+      args.apiFormat,
+      abortController.signal
+    )
+    const selectedModelAvailable = args.selectedModelId
+      ? models.some((model) => model.id === args.selectedModelId)
+      : undefined
+
+    return {
+      providerId: args.providerId,
+      label: args.label,
+      baseUrl: normalizedBaseUrl,
+      status: 'healthy',
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+      modelCount: models.length,
+      selectedModelId: args.selectedModelId,
+      selectedModelAvailable,
+      message: `Model discovery returned ${models.length} model${models.length === 1 ? '' : 's'}.`
+    }
+  } catch (error) {
+    return {
+      providerId: args.providerId,
+      label: args.label,
+      baseUrl: normalizedBaseUrl,
+      status: 'unhealthy',
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+      selectedModelId: args.selectedModelId,
+      message: formatProviderHealthError(error)
+    }
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 export async function* streamProviderChat(
@@ -133,10 +199,11 @@ export async function* streamProviderChat(
   }
 }
 
-async function fetchAnthropicModels(baseUrl: string, apiKey: string): Promise<ProviderModel[]> {
+async function fetchAnthropicModels(baseUrl: string, apiKey: string, signal?: AbortSignal): Promise<ProviderModel[]> {
   const response = await fetch(buildProviderUrl(baseUrl, '/models'), {
     method: 'GET',
-    headers: anthropicHeaders(apiKey)
+    headers: anthropicHeaders(apiKey),
+    signal
   })
 
   if (!response.ok) {
@@ -214,6 +281,14 @@ function extractModelRows(payload: unknown): unknown[] {
   if (Array.isArray(candidate.models)) return candidate.models
 
   return []
+}
+
+function formatProviderHealthError(error: unknown): string {
+  if (error instanceof Error && error.name === 'AbortError') {
+    return 'Provider health check timed out.'
+  }
+
+  return error instanceof Error ? error.message : 'Provider health check failed.'
 }
 
 function providerHeaders(apiKey: string): Record<string, string> {

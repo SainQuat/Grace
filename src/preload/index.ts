@@ -3,11 +3,15 @@ import type {
   ChatRequestPayload,
   ChatStreamEvent,
   CustomProviderSummary,
+  McpServerSummary,
+  ProviderHealthResult,
   ResponseNotificationPayload,
   ResponseNotificationResult,
   SaveCustomProviderPayload,
+  SaveMcpServerPayload,
   SetupAgentRequestPayload,
-  SetupAgentResponse
+  SetupAgentResponse,
+  UpdateMcpServerPayload
 } from '../shared/types'
 
 contextBridge.exposeInMainWorld('graceAI', {
@@ -35,6 +39,21 @@ contextBridge.exposeInMainWorld('graceAI', {
   },
   refreshCustomProviderModels(providerId?: string): Promise<CustomProviderSummary> {
     return ipcRenderer.invoke('provider:refresh-custom-models', providerId)
+  },
+  checkProviderHealth(providerId?: string): Promise<ProviderHealthResult> {
+    return ipcRenderer.invoke('provider:check-health', providerId)
+  },
+  getMcpServers(): Promise<McpServerSummary[]> {
+    return ipcRenderer.invoke('mcp:get-all')
+  },
+  saveMcpServer(payload: SaveMcpServerPayload): Promise<McpServerSummary> {
+    return ipcRenderer.invoke('mcp:save', payload)
+  },
+  updateMcpServer(serverId: string, patch: UpdateMcpServerPayload): Promise<McpServerSummary> {
+    return ipcRenderer.invoke('mcp:update', serverId, patch)
+  },
+  deleteMcpServer(serverId: string): Promise<void> {
+    return ipcRenderer.invoke('mcp:delete', serverId)
   },
   showResponseNotification(payload: ResponseNotificationPayload): Promise<ResponseNotificationResult> {
     return ipcRenderer.invoke('notification:show-response', payload)

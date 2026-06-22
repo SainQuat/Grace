@@ -1,4 +1,4 @@
-export const PERSISTENT_STATE_APP_VERSION = '0.1.13'
+export const PERSISTENT_STATE_APP_VERSION = '1.0.0'
 export const PERSISTENT_STATE_SCHEMA_VERSION = 1
 
 export interface PersistentStateEnvelope<T> {

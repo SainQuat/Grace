@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { advanceAgentRun, createAgentRun, getAgentRunProgress, setAgentRunExpanded } from './agentWorkflow'
+import { advanceAgentRun, createAgentRun, getAgentRunCurrentStep, getAgentRunProgress, setAgentRunExpanded } from './agentWorkflow'
 
 describe('agent workflow', () => {
   it('creates deterministic visible steps', () => {
@@ -21,6 +21,8 @@ describe('agent workflow', () => {
     ])
     expect(run.steps[0].status).toBe('done')
     expect(run.steps[1].status).toBe('running')
+    expect(run.expanded).toBe(true)
+    expect(getAgentRunCurrentStep(run)?.title).toBe('Send request to model')
   })
 
   it('advances through stream, artifact, and done states', () => {
@@ -30,6 +32,7 @@ describe('agent workflow', () => {
     const done = advanceAgentRun(artifact, 'done', '2026-06-22T00:00:03.000Z')
 
     expect(streaming.steps.find((step) => step.title === 'Stream answer')?.status).toBe('running')
+    expect(getAgentRunCurrentStep(streaming)?.title).toBe('Stream answer')
     expect(artifact.steps.find((step) => step.title === 'Update live artifact')?.status).toBe('running')
     expect(done.status).toBe('done')
     expect(getAgentRunProgress(done)).toEqual({ done: 5, total: 5 })
