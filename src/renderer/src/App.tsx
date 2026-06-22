@@ -39,13 +39,23 @@ import {
   X,
   Zap
 } from 'lucide-react'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { mcpMarketplacePresets } from '../../shared/mcpMarketplace'
 import { providerPresets } from '../../shared/providerPresets'
-import type { ChatMessagePayload, ChatStreamEvent, CustomProviderSummary, ProviderModel, SkillSummary } from '../../shared/types'
-import { advanceAgentRun, createAgentRun, getAgentRunProgress, setAgentRunExpanded, type AgentRun } from './agentWorkflow'
+import type {
+  ChatMessagePayload,
+  ChatStreamEvent,
+  CustomProviderSummary,
+  McpServerSummary,
+  ProviderHealthResult,
+  ProviderModel,
+  SaveMcpServerPayload,
+  SkillSummary,
+  UpdateMcpServerPayload
+} from '../../shared/types'
+import { advanceAgentRun, createAgentRun, getAgentRunCurrentStep, getAgentRunProgress, setAgentRunExpanded, type AgentRun } from './agentWorkflow'
 import { locales, translate, type Locale, type Translate, type TranslationKey } from './i18n'
 import { createPersistentStateEnvelope, ensureArrayNonEmpty, safeParsePersistentValue } from './persistentState'
 import { createSetupAgentPlan, redactSetupSecrets, shouldAskRemoteSetupAgent } from './setupAgent'
@@ -132,20 +142,6 @@ interface Space {
 
 type ProjectIconId = 'folder' | 'bot' | 'book' | 'file' | 'image' | 'zap' | 'settings' | 'archive'
 
-interface McpServer {
-  id: string
-  name: string
-  transport: 'http' | 'command'
-  url: string
-  command: string
-  envText: string
-  enabled: boolean
-  createdAt: string
-  sourcePresetId?: string
-  description?: string
-  requiredEnv?: string[]
-}
-
 interface SetupAgentMessage {
   id: string
   role: Role
@@ -184,6 +180,7 @@ interface CodeWorkspace {
   selectedText: string
   instruction: string
   sourceRequestId?: string
+  revisionBase?: string
   version?: number
   pendingDiff?: ArtifactDiff
 }
@@ -380,10 +377,48 @@ function isModelLocal(model: ModelOption, providers: CustomProviderSummary[]): b
   return Boolean(provider?.baseUrl && isLocalProviderUrl(provider.baseUrl))
 }
 
+function formatProviderHealthNote(result: ProviderHealthResult): string {
+  const label = result.label ?? result.providerId
+
+  if (result.status === 'healthy') {
+    return `${label} health: healthy (${result.latencyMs ?? 0} ms, ${result.modelCount ?? 0} models)`
+  }
+
+  if (result.status === 'not-configured') {
+    return `${label} health: not configured`
+  }
+
+  return `${label} health: unhealthy (${result.message})`
+}
+
+function getProviderHealthClass(health?: ProviderHealthResult): string {
+  return health ? `provider-health-${health.status}` : 'provider-health-unknown'
+}
+
+function formatProviderHealthBadge(health: ProviderHealthResult | undefined, translate: Translate): string {
+  if (!health) return translate('healthNotChecked')
+  if (health.status === 'healthy') return `${translate('healthHealthy')} · ${health.latencyMs ?? 0} ms`
+  if (health.status === 'not-configured') return translate('healthNotConfigured')
+  return translate('healthUnhealthy')
+}
+
+function formatProviderHealthDetail(health: ProviderHealthResult | undefined, translate: Translate): string {
+  if (!health) return translate('healthNotChecked')
+
+  const details = [health.message]
+  if (health.latencyMs !== undefined) details.push(`${health.latencyMs} ms`)
+  if (health.modelCount !== undefined) details.push(`${health.modelCount} models`)
+  if (health.selectedModelId && health.selectedModelAvailable === false) {
+    details.push(`selected model missing: ${health.selectedModelId}`)
+  }
+
+  return details.join(' · ')
+}
+
 const initialChats: Chat[] = [
   {
     id: 'chat-product-plan',
-    title: 'План Grace v0.1',
+    title: 'План Grace 1.0',
     pinned: true,
     project: 'Grace',
     projectId: 'project-grace',
@@ -392,13 +427,13 @@ const initialChats: Chat[] = [
       {
         id: 'm1',
         role: 'user',
-        content: 'Набросай первую версию десктопного AI-чата.'
+        content: 'Набросай production-ready версию desktop AI workspace.'
       },
       {
         id: 'm2',
         role: 'assistant',
         content:
-          'Начни с local-first чат-клиента: история в сайдбаре, выбор модели, streaming-ответы, файлы как chips и canvas-панель для длинных документов. Ключи провайдеров держим в desktop runtime, не в renderer state.'
+          'Фокус 1.0: agent timeline, artifact workspace, provider health, secure MCP credentials и строгий desktop UI. Ключи и MCP env держим в desktop runtime, не в renderer state.'
       }
     ]
   },
@@ -538,6 +573,10 @@ function getCodeWorkspaceFromAssistantContent(content: string, current: CodeWork
   const extracted = extractFirstCodeBlock(content)
 
   if (!extracted) {
+    if (current.revisionBase) {
+      return current
+    }
+
     return {
       ...current,
       content,
@@ -566,6 +605,37 @@ function createCodeRevisionPrompt(code: string, selectedText: string, instructio
     target,
     '```'
   ].join('\n')
+}
+
+const legacyMcpServersStorageKey = 'grace.mcpServers'
+
+function readLegacyMcpServersFromLocalStorage(): SaveMcpServerPayload[] {
+  const storedValue = localStorage.getItem(legacyMcpServersStorageKey)
+  return safeParsePersistentValue<SaveMcpServerPayload[]>(storedValue, [], {
+    validate: isLegacyMcpServerList
+  })
+}
+
+function isLegacyMcpServerList(value: unknown): value is SaveMcpServerPayload[] {
+  return Array.isArray(value) && value.every(isLegacyMcpServer)
+}
+
+function isLegacyMcpServer(value: unknown): value is SaveMcpServerPayload {
+  if (!value || typeof value !== 'object') return false
+
+  const candidate = value as Partial<SaveMcpServerPayload>
+  const transportValid = candidate.transport === 'http' || candidate.transport === 'command'
+
+  return (
+    typeof candidate.name === 'string' &&
+    transportValid &&
+    typeof candidate.url === 'string' &&
+    typeof candidate.command === 'string' &&
+    (candidate.envText === undefined || typeof candidate.envText === 'string') &&
+    (candidate.enabled === undefined || typeof candidate.enabled === 'boolean') &&
+    (candidate.id === undefined || typeof candidate.id === 'string') &&
+    (candidate.createdAt === undefined || typeof candidate.createdAt === 'string')
+  )
 }
 
 export function App(): JSX.Element {
@@ -606,7 +676,7 @@ export function App(): JSX.Element {
     null
   )
   const [activeSpaceId, setActiveSpaceId] = usePersistentState<string | null>('grace.activeSpaceId', null)
-  const [mcpServers, setMcpServers] = usePersistentState<McpServer[]>('grace.mcpServers', [])
+  const [mcpServers, setMcpServers] = useState<McpServerSummary[]>([])
   const [memoryEntries, setMemoryEntries] = usePersistentState<MemoryEntry[]>('grace.memoryEntries', [])
   const [promptTemplates, setPromptTemplates] = usePersistentState<PromptTemplate[]>('grace.promptTemplates', initialPromptTemplates)
   const [checkpoints, setCheckpoints] = usePersistentState<ChatCheckpoint[]>('grace.checkpoints', [])
@@ -642,6 +712,7 @@ export function App(): JSX.Element {
       models: []
     }))
   )
+  const [providerHealth, setProviderHealth] = useState<Record<string, ProviderHealthResult>>({})
   const [installedSkills, setInstalledSkills] = usePersistentState<SkillSummary[]>('grace.installedSkills', [])
   const [activeRequests, setActiveRequests] = useState<Record<string, string>>({})
   const requestChatRef = useRef<Record<string, string>>({})
@@ -662,6 +733,14 @@ export function App(): JSX.Element {
   )
   const visibleSkills = useMemo(() => [...presetSkills, ...installedSkills], [installedSkills])
   const t: Translate = useMemo(() => (key) => translate(locale, key), [locale])
+  const checkProviderHealth = useCallback(async (providerId?: string): Promise<ProviderHealthResult> => {
+    const result = await window.graceAI.checkProviderHealth(providerId)
+    setProviderHealth((currentHealth) => ({
+      ...currentHealth,
+      [result.providerId]: result
+    }))
+    return result
+  }, [])
   const selectedSkill = visibleSkills.find((skill) => skill.id === selectedSkillId) ?? null
   const activeChat = chats.find((chat) => chat.id === activeChatId) ?? chats[0]
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null
@@ -761,6 +840,45 @@ export function App(): JSX.Element {
           )
         )
       })
+  }, [])
+
+  useEffect(() => {
+    let canceled = false
+
+    async function loadMcpServers(): Promise<void> {
+      try {
+        const legacyServers = readLegacyMcpServersFromLocalStorage()
+
+        if (legacyServers.length > 0) {
+          const migratedServers: McpServerSummary[] = []
+
+          for (const server of legacyServers) {
+            migratedServers.push(await window.graceAI.saveMcpServer(server))
+          }
+
+          localStorage.removeItem(legacyMcpServersStorageKey)
+
+          if (!canceled) {
+            setMcpServers(migratedServers)
+          }
+          return
+        }
+
+        const servers = await window.graceAI.getMcpServers()
+
+        if (!canceled) {
+          setMcpServers(servers)
+        }
+      } catch (error) {
+        console.error('Failed to load MCP servers.', error)
+      }
+    }
+
+    void loadMcpServers()
+
+    return () => {
+      canceled = true
+    }
   }, [])
 
   useEffect(() => {
@@ -935,12 +1053,14 @@ export function App(): JSX.Element {
             ...currentWorkspace,
             content: revisionBase,
             sourceRequestId: undefined,
+            revisionBase: undefined,
+            selectedText: '',
             pendingDiff: createArtifactDiff(uid('diff'), revisionBase, currentWorkspace.content, 'Targeted code edit'),
             version: currentWorkspace.version ?? 1
           }
         }
 
-        return { ...currentWorkspace, sourceRequestId: undefined, version: currentWorkspace.version ?? 1 }
+        return { ...currentWorkspace, sourceRequestId: undefined, revisionBase: undefined, version: currentWorkspace.version ?? 1 }
       })
       delete requestChatRef.current[event.requestId]
       delete responseContentRef.current[event.requestId]
@@ -1294,8 +1414,9 @@ export function App(): JSX.Element {
     const startedAt = new Date().toISOString()
     requestChatRef.current[requestId] = activeChat.id
     responseContentRef.current[requestId] = ''
-    if (nextRevisionBaseRef.current) {
-      revisionBaseByRequestRef.current[requestId] = nextRevisionBaseRef.current
+    const revisionBase = nextRevisionBaseRef.current
+    if (revisionBase) {
+      revisionBaseByRequestRef.current[requestId] = revisionBase
       nextRevisionBaseRef.current = null
     }
     stoppedRequestRef.current.delete(requestId)
@@ -1367,10 +1488,21 @@ export function App(): JSX.Element {
     if (codeIntent) {
       setCanvasOpen(true)
       setRightPanelMode('code')
-      setCodeWorkspace({
-        ...initialCodeWorkspace,
-        sourceRequestId: requestId
-      })
+      setCodeWorkspace((currentWorkspace) =>
+        revisionBase
+          ? {
+              ...currentWorkspace,
+              content: revisionBase,
+              instruction: '',
+              sourceRequestId: requestId,
+              revisionBase,
+              pendingDiff: undefined
+            }
+          : {
+              ...initialCodeWorkspace,
+              sourceRequestId: requestId
+            }
+      )
     } else if (selectedToolIds.includes('canvas')) {
       setCanvasOpen(true)
       setRightPanelMode('canvas')
@@ -1622,18 +1754,8 @@ export function App(): JSX.Element {
     requestAnimationFrame(() => textareaRef.current?.focus())
   }
 
-  function upsertMcpServer(server: Omit<McpServer, 'id' | 'createdAt'> & { id?: string; createdAt?: string }): void {
-    const nextServer: McpServer = {
-      id: server.id ?? uid('mcp'),
-      name: server.name.trim() || 'Custom MCP',
-      transport: server.transport,
-      url: server.url.trim(),
-      command: server.command.trim(),
-      envText: server.envText.trim(),
-      enabled: server.enabled,
-      createdAt: server.createdAt ?? new Date().toISOString()
-    }
-
+  async function upsertMcpServer(server: SaveMcpServerPayload): Promise<void> {
+    const nextServer = await window.graceAI.saveMcpServer(server)
     setMcpServers((currentServers) => {
       const exists = currentServers.some((candidate) => candidate.id === nextServer.id)
       return exists
@@ -1642,13 +1764,15 @@ export function App(): JSX.Element {
     })
   }
 
-  function updateMcpServer(serverId: string, patch: Partial<McpServer>): void {
+  async function updateMcpServer(serverId: string, patch: UpdateMcpServerPayload): Promise<void> {
+    const nextServer = await window.graceAI.updateMcpServer(serverId, patch)
     setMcpServers((currentServers) =>
-      currentServers.map((server) => (server.id === serverId ? { ...server, ...patch } : server))
+      currentServers.map((server) => (server.id === serverId ? nextServer : server))
     )
   }
 
-  function deleteMcpServer(serverId: string): void {
+  async function deleteMcpServer(serverId: string): Promise<void> {
+    await window.graceAI.deleteMcpServer(serverId)
     setMcpServers((currentServers) => currentServers.filter((server) => server.id !== serverId))
   }
 
@@ -1656,7 +1780,7 @@ export function App(): JSX.Element {
     const preset = mcpMarketplacePresets.find((candidate) => candidate.id === presetId)
     if (!preset) return
 
-    upsertMcpServer({
+    void upsertMcpServer({
       name: preset.name,
       transport: preset.transport,
       url: preset.url ?? '',
@@ -1666,6 +1790,8 @@ export function App(): JSX.Element {
       sourcePresetId: preset.id,
       description: preset.description,
       requiredEnv: preset.requiredEnv
+    }).catch((error) => {
+      console.error('Failed to install MCP preset.', error)
     })
   }
 
@@ -1762,15 +1888,19 @@ export function App(): JSX.Element {
     }
 
     if (plan.mcpServer) {
-      upsertMcpServer({
-        name: plan.mcpServer.name,
-        transport: plan.mcpServer.transport,
-        url: plan.mcpServer.url,
-        command: plan.mcpServer.command,
-        envText: plan.mcpServer.envText,
-        enabled: true
-      })
-      localNotes.push(`MCP: ${plan.mcpServer.name}`)
+      try {
+        await upsertMcpServer({
+          name: plan.mcpServer.name,
+          transport: plan.mcpServer.transport,
+          url: plan.mcpServer.url,
+          command: plan.mcpServer.command,
+          envText: plan.mcpServer.envText,
+          enabled: true
+        })
+        localNotes.push(`MCP: ${plan.mcpServer.name}`)
+      } catch (error) {
+        localNotes.push(error instanceof Error ? error.message : 'MCP setup failed.')
+      }
     }
 
     if (plan.provider) {
@@ -1803,6 +1933,16 @@ export function App(): JSX.Element {
       providers.find((provider) => provider.id === 'zed' && provider.configured) ??
       providers.find((provider) => provider.configured && provider.baseUrl.includes('api.zed.md')) ??
       providers.find((provider) => provider.id === 'custom' && provider.configured)
+
+    if (plan.providerHealthCheck) {
+      try {
+        const health = await checkProviderHealth(plan.providerHealthProviderId ?? plan.provider?.providerId ?? setupProvider?.id ?? 'custom')
+        localNotes.push(formatProviderHealthNote(health))
+      } catch (error) {
+        localNotes.push(error instanceof Error ? error.message : 'Provider health check failed.')
+      }
+    }
+
     let remoteAnswer = ''
     if (
       shouldAskRemoteSetupAgent({
@@ -2007,6 +2147,8 @@ export function App(): JSX.Element {
               ...currentWorkspace,
               content: appliedDiff.nextContent,
               pendingDiff: undefined,
+              revisionBase: undefined,
+              selectedText: '',
               version: (currentWorkspace.version ?? 1) + 1
             }))
           }}
@@ -2015,6 +2157,7 @@ export function App(): JSX.Element {
             const rejectedDiff = rejectArtifactDiff(codeWorkspace.pendingDiff)
             setCodeWorkspace((currentWorkspace) => ({
               ...currentWorkspace,
+              revisionBase: undefined,
               pendingDiff: rejectedDiff.status === 'rejected' ? undefined : currentWorkspace.pendingDiff
             }))
           }}
@@ -2030,6 +2173,7 @@ export function App(): JSX.Element {
       {providerSettingsOpen ? (
         <ProviderSettingsModal
           providers={providers}
+          providerHealth={providerHealth}
           themeMode={themeMode}
           locale={locale}
           responseNotificationsEnabled={responseNotificationsEnabled}
@@ -2044,6 +2188,7 @@ export function App(): JSX.Element {
           onResponseNotificationsChange={setResponseNotificationsEnabled}
           onPrivacyChange={setPrivacySettings}
           onModelRouterModeChange={setModelRouterMode}
+          onCheckProviderHealth={checkProviderHealth}
           onUpsertMcpServer={upsertMcpServer}
           onInstallMcpPreset={installMcpPreset}
           onUpdateMcpServer={updateMcpServer}
@@ -2943,23 +3088,34 @@ function MessageBubble(props: {
 
 function AgentRunView(props: { run: AgentRun; translate: Translate; onToggle: () => void }): JSX.Element {
   const progress = getAgentRunProgress(props.run)
+  const currentStep = getAgentRunCurrentStep(props.run)
+  const progressPercent = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0
 
   return (
     <div className={`agent-run ${props.run.status}`}>
       <button className="agent-run-summary" type="button" onClick={props.onToggle}>
         <ChevronRight className={props.run.expanded ? 'expanded' : ''} size={14} />
-        <span>{props.translate('agentSteps')}</span>
+        <span>
+          <strong>{props.translate('agentSteps')}</strong>
+          <small>{currentStep ? currentStep.title : props.run.title}</small>
+        </span>
         <small>
           {progress.done}/{progress.total} · {props.run.status}
         </small>
       </button>
+      <div className="agent-run-progress" aria-hidden="true">
+        <span style={{ width: `${progressPercent}%` }} />
+      </div>
       {props.run.expanded ? (
         <div className="agent-run-steps">
           {props.run.steps.map((step) => (
             <div className={`agent-step ${step.status}`} key={step.id}>
               <span className="agent-step-dot" />
               <span>
-                <strong>{step.title}</strong>
+                <strong>
+                  {step.title}
+                  <em>{step.status}</em>
+                </strong>
                 {step.detail ? <small>{step.detail}</small> : null}
               </span>
             </div>
@@ -3531,12 +3687,13 @@ type SettingsTabId = 'providers' | 'models' | 'mcp' | 'privacy' | 'notifications
 
 function ProviderSettingsModal(props: {
   providers: CustomProviderSummary[]
+  providerHealth: Record<string, ProviderHealthResult>
   themeMode: ThemeMode
   locale: Locale
   responseNotificationsEnabled: boolean
   privacySettings: PrivacySettings
   modelRouterMode: ModelRouterMode
-  mcpServers: McpServer[]
+  mcpServers: McpServerSummary[]
   usageSummary: ReturnType<typeof summarizeUsage>
   translate: Translate
   onClose: () => void
@@ -3545,10 +3702,11 @@ function ProviderSettingsModal(props: {
   onResponseNotificationsChange: (enabled: boolean) => void
   onPrivacyChange: (settings: PrivacySettings) => void
   onModelRouterModeChange: (mode: ModelRouterMode) => void
-  onUpsertMcpServer: (server: Omit<McpServer, 'id' | 'createdAt'> & { id?: string; createdAt?: string }) => void
+  onCheckProviderHealth: (providerId?: string) => Promise<ProviderHealthResult>
+  onUpsertMcpServer: (server: SaveMcpServerPayload) => Promise<void>
   onInstallMcpPreset: (presetId: string) => void
-  onUpdateMcpServer: (serverId: string, patch: Partial<McpServer>) => void
-  onDeleteMcpServer: (serverId: string) => void
+  onUpdateMcpServer: (serverId: string, patch: UpdateMcpServerPayload) => Promise<void>
+  onDeleteMcpServer: (serverId: string) => Promise<void>
   onSaved: (provider: CustomProviderSummary) => void
 }): JSX.Element {
   const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTabId>('providers')
@@ -3568,14 +3726,16 @@ function ProviderSettingsModal(props: {
   const [apiKey, setApiKey] = useState('')
   const [status, setStatus] = useState<'idle' | 'saving' | 'refreshing'>('idle')
   const [error, setError] = useState<string | null>(selectedProvider.lastError ?? null)
+  const [healthCheckingProviderIds, setHealthCheckingProviderIds] = useState<Record<string, boolean>>({})
   const [mcpDraft, setMcpDraft] = useState({
     name: '',
-    transport: 'command' as McpServer['transport'],
+    transport: 'command' as SaveMcpServerPayload['transport'],
     url: '',
     command: '',
     envText: ''
   })
   const dialogRef = useFocusTrap<HTMLElement>()
+  const autoHealthProviderIdsRef = useRef(new Set<string>())
 
   useEffect(() => {
     const provider = props.providers.find((candidate) => candidate.id === selectedProviderId)
@@ -3585,9 +3745,27 @@ function ProviderSettingsModal(props: {
     setError(provider?.lastError ?? null)
   }, [props.providers, selectedProviderId])
 
+  useEffect(() => {
+    props.providers.forEach((provider) => {
+      const providerId = provider.id
+
+      if (!providerId || !provider.configured || props.providerHealth[providerId] || autoHealthProviderIdsRef.current.has(providerId)) {
+        return
+      }
+
+      autoHealthProviderIdsRef.current.add(providerId)
+      void props.onCheckProviderHealth(providerId).catch(() => {
+        autoHealthProviderIdsRef.current.delete(providerId)
+      })
+    })
+  }, [props.providers, props.providerHealth, props.onCheckProviderHealth])
+
   const hasStoredKey = Boolean(selectedProvider.configured)
   const baseUrlMatchesStored = baseUrl.trim().replace(/\/+$/, '') === selectedProvider.baseUrl.trim().replace(/\/+$/, '')
   const canSave = baseUrl.trim().length > 0 && (apiKey.trim().length > 0 || (hasStoredKey && baseUrlMatchesStored))
+  const selectedProviderKey = selectedProvider.id ?? 'custom'
+  const selectedProviderHealth = props.providerHealth[selectedProviderKey]
+  const selectedProviderHealthChecking = Boolean(healthCheckingProviderIds[selectedProviderKey])
 
   async function saveProvider(): Promise<void> {
     if (!apiKey.trim() && hasStoredKey) {
@@ -3627,25 +3805,48 @@ function ProviderSettingsModal(props: {
     }
   }
 
-  function addMcpServer(): void {
+  async function refreshHealth(providerId = selectedProvider.id ?? 'custom'): Promise<void> {
+    setHealthCheckingProviderIds((currentIds) => ({ ...currentIds, [providerId]: true }))
+    setError(null)
+
+    try {
+      await props.onCheckProviderHealth(providerId)
+    } catch (healthError) {
+      setError(healthError instanceof Error ? healthError.message : 'Failed to check provider health.')
+    } finally {
+      setHealthCheckingProviderIds((currentIds) => {
+        const nextIds = { ...currentIds }
+        delete nextIds[providerId]
+        return nextIds
+      })
+    }
+  }
+
+  async function addMcpServer(): Promise<void> {
     const hasTarget = mcpDraft.transport === 'http' ? mcpDraft.url.trim() : mcpDraft.command.trim()
     if (!mcpDraft.name.trim() || !hasTarget) return
 
-    props.onUpsertMcpServer({
-      name: mcpDraft.name,
-      transport: mcpDraft.transport,
-      url: mcpDraft.url,
-      command: mcpDraft.command,
-      envText: mcpDraft.envText,
-      enabled: true
-    })
-    setMcpDraft({
-      name: '',
-      transport: 'command',
-      url: '',
-      command: '',
-      envText: ''
-    })
+    setError(null)
+
+    try {
+      await props.onUpsertMcpServer({
+        name: mcpDraft.name,
+        transport: mcpDraft.transport,
+        url: mcpDraft.url,
+        command: mcpDraft.command,
+        envText: mcpDraft.envText,
+        enabled: true
+      })
+      setMcpDraft({
+        name: '',
+        transport: 'command',
+        url: '',
+        command: '',
+        envText: ''
+      })
+    } catch (mcpError) {
+      setError(mcpError instanceof Error ? mcpError.message : 'Failed to save MCP server.')
+    }
   }
 
   const settingsTabs: Array<{ id: SettingsTabId; label: string }> = [
@@ -3823,17 +4024,26 @@ function ProviderSettingsModal(props: {
         </div>
 
         <div className="provider-grid">
-          {props.providers.map((provider) => (
-            <button
-              key={provider.id}
-              className={`provider-card ${provider.id === selectedProvider.id ? 'active' : ''}`}
-              type="button"
-              onClick={() => setSelectedProviderId(provider.id ?? 'custom')}
-            >
-              <strong>{provider.label}</strong>
-              <span>{provider.configured ? `${provider.models.length} models` : providerPresets.find((preset) => preset.id === provider.id)?.modelHint}</span>
-            </button>
-          ))}
+          {props.providers.map((provider) => {
+            const providerId = provider.id ?? 'custom'
+            const health = props.providerHealth[providerId]
+            const checkingHealth = Boolean(healthCheckingProviderIds[providerId])
+
+            return (
+              <button
+                key={providerId}
+                className={`provider-card ${provider.id === selectedProvider.id ? 'active' : ''}`}
+                type="button"
+                onClick={() => setSelectedProviderId(providerId)}
+              >
+                <strong>{provider.label}</strong>
+                <span>{provider.configured ? `${provider.models.length} models` : providerPresets.find((preset) => preset.id === provider.id)?.modelHint}</span>
+                <small className={`provider-health-badge ${getProviderHealthClass(health)}`}>
+                  {checkingHealth ? props.translate('checking') : formatProviderHealthBadge(health, props.translate)}
+                </small>
+              </button>
+            )
+          })}
         </div>
 
         <div className="settings-form">
@@ -3853,8 +4063,21 @@ function ProviderSettingsModal(props: {
         </div>
 
         {error ? <div className="settings-error" role="alert">{error}</div> : null}
+        <div className={`provider-health-detail ${getProviderHealthClass(selectedProviderHealth)}`}>
+          <strong>{props.translate('providerHealth')}</strong>
+          <span>{formatProviderHealthDetail(selectedProviderHealth, props.translate)}</span>
+        </div>
 
         <div className="settings-actions">
+          <button
+            className="text-button"
+            type="button"
+            onClick={() => void refreshHealth(selectedProviderKey)}
+            disabled={!hasStoredKey || selectedProviderHealthChecking}
+          >
+            <Shield size={15} />
+            {selectedProviderHealthChecking ? props.translate('checking') : props.translate('checkHealth')}
+          </button>
           <button className="text-button" type="button" onClick={refreshModels} disabled={!hasStoredKey || status !== 'idle'}>
             <RefreshCw size={15} />
             {props.translate('refreshModels')}
@@ -3916,16 +4139,35 @@ function ProviderSettingsModal(props: {
               <div>
                 <strong>{server.name}</strong>
                 <span>{server.transport === 'http' ? server.url : server.command}</span>
+                {server.envRedactedText ? (
+                  <small>{server.envRedactedText.split('\n').join(' · ')}</small>
+                ) : null}
               </div>
               <div className="mcp-card-actions">
                 <button
                   className={`mini-toggle ${server.enabled ? 'active' : ''}`}
                   type="button"
-                  onClick={() => props.onUpdateMcpServer(server.id, { enabled: !server.enabled })}
+                  onClick={() => {
+                    setError(null)
+                    void props.onUpdateMcpServer(server.id, { enabled: !server.enabled }).catch((mcpError) => {
+                      setError(mcpError instanceof Error ? mcpError.message : 'Failed to update MCP server.')
+                    })
+                  }}
                 >
                   {server.enabled ? props.translate('enabled') : props.translate('disabled')}
                 </button>
-                <button className="icon-button small" type="button" aria-label={props.translate('delete')} title={props.translate('delete')} onClick={() => props.onDeleteMcpServer(server.id)}>
+                <button
+                  className="icon-button small"
+                  type="button"
+                  aria-label={props.translate('delete')}
+                  title={props.translate('delete')}
+                  onClick={() => {
+                    setError(null)
+                    void props.onDeleteMcpServer(server.id).catch((mcpError) => {
+                      setError(mcpError instanceof Error ? mcpError.message : 'Failed to delete MCP server.')
+                    })
+                  }}
+                >
                   <Trash2 size={14} />
                 </button>
               </div>
@@ -3940,7 +4182,7 @@ function ProviderSettingsModal(props: {
           </label>
           <label>
             <span>{props.translate('transport')}</span>
-            <select value={mcpDraft.transport} onChange={(event) => setMcpDraft((draft) => ({ ...draft, transport: event.target.value as McpServer['transport'] }))}>
+            <select value={mcpDraft.transport} onChange={(event) => setMcpDraft((draft) => ({ ...draft, transport: event.target.value as SaveMcpServerPayload['transport'] }))}>
               <option value="command">Command</option>
               <option value="http">HTTP</option>
             </select>
@@ -3961,7 +4203,7 @@ function ProviderSettingsModal(props: {
             <textarea value={mcpDraft.envText} placeholder="NOTION_TOKEN=..." onChange={(event) => setMcpDraft((draft) => ({ ...draft, envText: event.target.value }))} />
           </label>
           <div className="settings-actions">
-            <button className="primary-button" type="button" onClick={addMcpServer}>
+            <button className="primary-button" type="button" onClick={() => void addMcpServer()}>
               {props.translate('mcpAdd')}
             </button>
           </div>
@@ -4650,6 +4892,10 @@ function CodeWorkspacePanel(props: {
 }): JSX.Element {
   const canPreviewHtml = /^(html|htm)$/.test(props.workspace.language.toLowerCase()) || /<!doctype html|<html[\s>]|<body[\s>]/i.test(props.workspace.content)
   const selectedText = props.workspace.selectedText.trim()
+  const contentLineCount = props.workspace.content ? props.workspace.content.split('\n').length : 0
+  const selectedLineCount = selectedText ? selectedText.split('\n').length : 0
+  const revisionButtonLabel = selectedText ? props.translate('reviseSelection') : props.translate('reviseFile')
+  const previewStateLabel = canPreviewHtml ? props.translate('previewReady') : props.translate('previewWaiting')
 
   return (
     <div className="code-workspace">
@@ -4657,17 +4903,19 @@ function CodeWorkspacePanel(props: {
         <div className="code-workspace-meta">
           <Code2 size={15} />
           <span>{props.workspace.language || 'text'} · v{props.workspace.version ?? 1}</span>
+          <span className="workspace-stat">{contentLineCount} {props.translate('lines')}</span>
+          <span className={`workspace-preview-state ${canPreviewHtml ? 'ready' : ''}`}>{previewStateLabel}</span>
           {props.isStreaming ? <span className="streaming-dot">{props.translate('live')}</span> : null}
         </div>
         {props.workspace.pendingDiff ? (
           <div className="artifact-diff-box">
-            <strong>Pending diff</strong>
+            <strong>{props.translate('pendingDiff')}</strong>
             <span>
               +{props.workspace.pendingDiff.addedLines} / -{props.workspace.pendingDiff.removedLines}
             </span>
             <div className="inline-actions">
-              <button className="primary-button" type="button" onClick={props.onApplyDiff}>Apply</button>
-              <button className="text-button" type="button" onClick={props.onRejectDiff}>Reject</button>
+              <button className="primary-button" type="button" onClick={props.onApplyDiff}>{props.translate('apply')}</button>
+              <button className="text-button" type="button" onClick={props.onRejectDiff}>{props.translate('reject')}</button>
             </div>
           </div>
         ) : null}
@@ -4679,7 +4927,8 @@ function CodeWorkspacePanel(props: {
           onChange={(event) =>
             props.onChange((workspace) => ({
               ...workspace,
-              content: event.target.value
+              content: event.target.value,
+              selectedText: workspace.selectedText && event.target.value.includes(workspace.selectedText) ? workspace.selectedText : ''
             }))
           }
           onSelect={(event) => {
@@ -4697,6 +4946,28 @@ function CodeWorkspacePanel(props: {
           <strong>{props.translate('targetedEdit')}</strong>
           <span>{selectedText ? props.translate('selectionReady') : props.translate('selectionEmpty')}</span>
         </div>
+        <div className={`selection-target ${selectedText ? 'selected' : ''}`}>
+          <div>
+            <span>{props.translate('revisionTarget')}</span>
+            <strong>{selectedText ? props.translate('selectedFragment') : props.translate('fullFile')}</strong>
+            <small>
+              {selectedText
+                ? `${selectedText.length} ${props.translate('chars')} · ${selectedLineCount} ${props.translate('lines')}`
+                : `${contentLineCount} ${props.translate('lines')}`}
+            </small>
+          </div>
+          <button
+            className="icon-button small"
+            type="button"
+            aria-label={props.translate('clearSelection')}
+            title={props.translate('clearSelection')}
+            disabled={!selectedText}
+            onClick={() => props.onChange((workspace) => ({ ...workspace, selectedText: '' }))}
+          >
+            <X size={14} />
+          </button>
+        </div>
+        {selectedText ? <pre className="selection-preview">{selectedText.slice(0, 800)}</pre> : null}
         <textarea
           value={props.workspace.instruction}
           rows={3}
@@ -4718,25 +4989,26 @@ function CodeWorkspacePanel(props: {
           }}
         >
           <Send size={15} />
-          {props.translate('askSelection')}
+          {revisionButtonLabel}
         </button>
       </div>
 
-      {canPreviewHtml ? (
-        <div className="code-preview-pane">
-          <div className="code-workspace-meta">
-            <Eye size={15} />
-            <span>{props.translate('preview')}</span>
-          </div>
+      <div className={`code-preview-pane ${canPreviewHtml ? 'ready' : 'empty'}`}>
+        <div className="code-workspace-meta">
+          <Eye size={15} />
+          <span>{props.translate('preview')}</span>
+          <span className={`workspace-preview-state ${canPreviewHtml ? 'ready' : ''}`}>{previewStateLabel}</span>
+        </div>
+        {canPreviewHtml ? (
           <iframe title={props.translate('preview')} sandbox="allow-scripts" srcDoc={props.workspace.content} />
-        </div>
-      ) : (
-        <div className="panel-empty-state compact">
-          <Eye size={22} />
-          <strong>{props.translate('previewUnavailableTitle')}</strong>
-          <span>{props.translate('previewUnavailableText')}</span>
-        </div>
-      )}
+        ) : (
+          <div className="panel-empty-state compact">
+            <Eye size={22} />
+            <strong>{props.translate('previewUnavailableTitle')}</strong>
+            <span>{props.translate('previewUnavailableText')}</span>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

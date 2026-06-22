@@ -30,6 +30,7 @@ export interface CreateAgentRunOptions {
   toolCount?: number
   fileCount?: number
   startedAt?: string
+  expanded?: boolean
 }
 
 export function createAgentRun(options: CreateAgentRunOptions): AgentRun {
@@ -60,6 +61,7 @@ export function createAgentRun(options: CreateAgentRunOptions): AgentRun {
     {
       id: `${options.id}-stream`,
       title: 'Stream answer',
+      detail: 'Tokens arriving from the selected model',
       status: 'queued'
     },
     ...(options.hasCodeIntent
@@ -75,6 +77,7 @@ export function createAgentRun(options: CreateAgentRunOptions): AgentRun {
     {
       id: `${options.id}-finalize`,
       title: 'Finalize response',
+      detail: options.hasCodeIntent ? 'Prepare code diff and chat response' : 'Prepare final chat response',
       status: 'queued'
     }
   ]
@@ -84,7 +87,7 @@ export function createAgentRun(options: CreateAgentRunOptions): AgentRun {
     requestId: options.requestId,
     title: options.skillName ? `Agent run · ${options.skillName}` : 'Agent run',
     status: 'running',
-    expanded: false,
+    expanded: options.expanded ?? true,
     steps,
     startedAt
   }
@@ -152,4 +155,8 @@ export function getAgentRunProgress(run: AgentRun): { done: number; total: numbe
     done: run.steps.filter((step) => step.status === 'done').length,
     total: run.steps.length
   }
+}
+
+export function getAgentRunCurrentStep(run: AgentRun): AgentStep | undefined {
+  return run.steps.find((step) => step.status === 'running' || step.status === 'error') ?? run.steps.find((step) => step.status === 'queued')
 }

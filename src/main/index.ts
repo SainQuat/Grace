@@ -2,13 +2,17 @@ import { app, BrowserWindow, ipcMain, Notification } from 'electron'
 import { join } from 'node:path'
 import type {
   ChatRequestPayload,
+  ProviderHealthResult,
+  SaveMcpServerPayload,
   ResponseNotificationPayload,
   ResponseNotificationResult,
   SaveCustomProviderPayload,
-  SetupAgentRequestPayload
+  SetupAgentRequestPayload,
+  UpdateMcpServerPayload
 } from '../shared/types'
 import { getProviderPreset } from '../shared/providerPresets'
-import { fetchProviderModels, normalizeBaseUrl, streamProviderChat } from './providerClient'
+import { checkProviderHealth, fetchProviderModels, normalizeBaseUrl, streamProviderChat } from './providerClient'
+import { deleteMcpServer, getMcpServerSummaries, saveMcpServer, updateMcpServer } from './mcpStore'
 import {
   getCustomProviderSecret,
   getCustomProviderSummary,
@@ -113,6 +117,12 @@ app.whenReady().then(() => {
 
   ipcMain.handle('provider:get-custom', async () => getCustomProviderSummary())
   ipcMain.handle('provider:get-all', async () => getProviderSummaries())
+  ipcMain.handle('mcp:get-all', async () => getMcpServerSummaries())
+  ipcMain.handle('mcp:save', async (_event, payload: SaveMcpServerPayload) => saveMcpServer(payload))
+  ipcMain.handle('mcp:update', async (_event, serverId: string, patch: UpdateMcpServerPayload) =>
+    updateMcpServer(serverId, patch)
+  )
+  ipcMain.handle('mcp:delete', async (_event, serverId: string) => deleteMcpServer(serverId))
 
   ipcMain.handle('provider:save-custom', async (_event, payload: SaveCustomProviderPayload) => {
     const preset = getProviderPreset(payload.providerId)
@@ -138,6 +148,32 @@ app.whenReady().then(() => {
 
     const models = await fetchProviderModels(secret.baseUrl, secret.apiKey, secret.apiFormat)
     return updateCustomProviderModels(providerId, models)
+  })
+
+  ipcMain.handle('provider:check-health', async (_event, providerId = 'custom'): Promise<ProviderHealthResult> => {
+    const preset = getProviderPreset(providerId)
+    const summary = await getCustomProviderSummary(preset.id)
+    const secret = await getCustomProviderSecret(preset.id)
+
+    if (!secret) {
+      return {
+        providerId: preset.id,
+        label: preset.label,
+        baseUrl: summary.baseUrl || preset.baseUrl,
+        status: 'not-configured',
+        checkedAt: new Date().toISOString(),
+        message: 'Provider is not configured.'
+      }
+    }
+
+    return checkProviderHealth({
+      providerId: preset.id,
+      label: summary.label ?? preset.label,
+      baseUrl: secret.baseUrl,
+      apiKey: secret.apiKey,
+      apiFormat: secret.apiFormat,
+      selectedModelId: summary.selectedModelId
+    })
   })
 
   ipcMain.handle(

@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   createRemoteSetupText,
   createSetupAgentPlan,
+  isProviderHealthRequest,
   parseModelRouterMode,
+  parseProviderHealthProviderId,
   parsePrivacyLocalOnly,
   parsePrivacyLocalOnlyMode,
   redactSetupSecrets,
@@ -85,6 +87,17 @@ describe('createSetupAgentPlan', () => {
       expect(plan.modelRouterMode).toBe(mode)
       expect(plan.selectedModelId).toBeUndefined()
     }
+  })
+
+  it('detects provider health checks as deterministic local actions', () => {
+    const plan = createSetupAgentPlan('check Zed provider health')
+
+    expect(isProviderHealthRequest('refresh provider health for Zed')).toBe(true)
+    expect(parseProviderHealthProviderId('refresh provider health for Zed')).toBe('zed')
+    expect(plan.providerHealthCheck).toBe(true)
+    expect(plan.providerHealthProviderId).toBe('zed')
+    expect(plan.actions.map((action) => action.type)).toContain('provider-health')
+    expect(plan.hasActions).toBe(true)
   })
 
   it('redacts secrets before optional remote setup text', () => {

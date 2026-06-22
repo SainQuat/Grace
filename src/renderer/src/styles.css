@@ -2027,6 +2027,7 @@ select:focus-visible,
 .code-workspace-meta {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   min-height: 32px;
   padding: 0 10px;
@@ -2034,6 +2035,25 @@ select:focus-visible,
   border-bottom: 1px solid var(--border);
   font-size: 12px;
   font-weight: 700;
+}
+
+.workspace-stat,
+.workspace-preview-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  color: var(--muted);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.workspace-preview-state.ready {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
 }
 
 .streaming-dot {
@@ -2073,6 +2093,56 @@ select:focus-visible,
   font-size: 12px;
 }
 
+.selection-target {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.selection-target.selected {
+  border-color: var(--accent-border);
+  box-shadow: inset 0 0 0 1px var(--accent-soft);
+}
+
+.selection-target div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.selection-target strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selection-target small {
+  color: var(--muted-2);
+  font-size: 11px;
+}
+
+.selection-preview {
+  max-height: 96px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  color: var(--muted);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .code-revision-box textarea {
   min-height: 72px;
   resize: vertical;
@@ -2088,6 +2158,17 @@ select:focus-visible,
   min-height: 180px;
   background: #ffffff;
   border: 0;
+}
+
+.code-preview-pane.empty {
+  min-height: 180px;
+}
+
+.code-preview-pane.empty .panel-empty-state {
+  height: 100%;
+  background: var(--code-bg);
+  border: 0;
+  border-radius: 0;
 }
 
 .agent-run {
@@ -2373,6 +2454,41 @@ select:focus-visible,
   font-size: 11px;
 }
 
+.provider-health-badge {
+  font-weight: 600;
+}
+
+.provider-card .provider-health-badge.provider-health-healthy,
+.provider-health-detail.provider-health-healthy strong {
+  color: #22c55e;
+}
+
+.provider-card .provider-health-badge.provider-health-unhealthy,
+.provider-health-detail.provider-health-unhealthy strong {
+  color: #ef4444;
+}
+
+.provider-card .provider-health-badge.provider-health-not-configured,
+.provider-card .provider-health-badge.provider-health-unknown,
+.provider-health-detail.provider-health-not-configured strong,
+.provider-health-detail.provider-health-unknown strong {
+  color: var(--muted-2);
+}
+
+.provider-health-detail {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.provider-health-detail span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .mcp-marketplace-grid {
   margin-bottom: 12px;
 }
@@ -2428,18 +2544,48 @@ select:focus-visible,
   border-radius: 7px;
 }
 
+.agent-run.running {
+  border-color: var(--accent-border);
+}
+
 .agent-run-summary {
   width: 100%;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   color: var(--text);
   text-align: left;
+  background: transparent;
+  border: 0;
 }
 
-.agent-run-summary small {
-  margin-left: auto;
+.agent-run-summary > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-run-summary strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.agent-run-summary > span small {
+  overflow: hidden;
   color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-run-summary > small {
+  margin-left: auto;
+  padding: 3px 7px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
   font-size: 11px;
   text-transform: uppercase;
 }
@@ -2452,6 +2598,8 @@ select:focus-visible,
   display: grid;
   gap: 7px;
   margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
 }
 
 .agent-step {
@@ -2463,9 +2611,37 @@ select:focus-visible,
 }
 
 .agent-step strong {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   color: var(--text);
   font-size: 12px;
+}
+
+.agent-step em {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  color: var(--muted);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 10px;
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.agent-step.running em {
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.agent-step.done em {
+  color: var(--success);
+}
+
+.agent-step.error em {
+  color: var(--error);
 }
 
 .agent-step small {
@@ -2493,6 +2669,22 @@ select:focus-visible,
 
 .agent-step.error .agent-step-dot {
   background: var(--error);
+}
+
+.agent-run-progress {
+  height: 3px;
+  margin-top: 8px;
+  overflow: hidden;
+  background: var(--surface-elevated);
+  border-radius: 999px;
+}
+
+.agent-run-progress span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width 160ms ease-out;
 }
 
 .artifact-diff-box,

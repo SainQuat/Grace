@@ -24,6 +24,7 @@ export type SetupAgentActionType =
   | 'locale'
   | 'privacy-local-only'
   | 'model-router-mode'
+  | 'provider-health'
 
 export interface SetupAgentAction {
   type: SetupAgentActionType
@@ -42,6 +43,8 @@ export interface SetupAgentPlan {
   locale?: 'ru' | 'en'
   privacyLocalOnly?: boolean
   modelRouterMode?: ModelRouterMode
+  providerHealthCheck?: boolean
+  providerHealthProviderId?: string
   cancelled?: boolean
 }
 
@@ -64,6 +67,7 @@ export function createSetupAgentPlan(input: string): SetupAgentPlan {
   const command = commandMatch ? commandMatch[0].trim() : ''
   const mentionsMcp = /\bmcp\b|notion|ноушен|ноушн|server|сервер/i.test(text)
   const mentionsProvider = /base\s*url|provider|провайдер|api\s*key|api[_-]?key|apikey|ключ/i.test(text)
+  const mentionsProviderHealth = isProviderHealthRequest(text)
 
   const plan: SetupAgentPlan = {
     summary: 'I prepared a local setup plan.',
@@ -128,6 +132,11 @@ export function createSetupAgentPlan(input: string): SetupAgentPlan {
     plan.modelRouterMode = modelRouterMode
   }
 
+  if (mentionsProviderHealth) {
+    plan.providerHealthCheck = true
+    plan.providerHealthProviderId = parseProviderHealthProviderId(text)
+  }
+
   plan.actions = createSetupActions(plan)
   plan.hasActions = plan.actions.length > 0
   plan.summary = plan.hasActions
@@ -173,6 +182,37 @@ export function parseModelRouterMode(input: string): ModelRouterMode | undefined
   ]
 
   return modes.find(([, pattern]) => pattern.test(text))?.[0]
+}
+
+export function isProviderHealthRequest(input: string): boolean {
+  const text = input.toLowerCase()
+  const mentionsProvider =
+    /\bprovider\b|провайдер|openai|anthropic|claude|deepseek|openrouter|groq|gemini|mistral|xai|zed|ollama|lm\s*studio|custom/i.test(
+      text
+    )
+  const mentionsHealth = /\bhealth\b|\bstatus\b|\bcheck\b|\btest\b|\brefresh\b|провер|статус|здоров|обнов/i.test(text)
+
+  return mentionsProvider && mentionsHealth
+}
+
+export function parseProviderHealthProviderId(input: string): string | undefined {
+  const text = input.toLowerCase()
+  const providers: Array<[string, RegExp]> = [
+    ['openrouter', /\bopenrouter\b/],
+    ['lmstudio', /\blm\s*studio\b|\blmstudio\b/],
+    ['anthropic', /\banthropic\b|\bclaude\b/],
+    ['deepseek', /\bdeepseek\b/],
+    ['openai', /\bopenai\b|\bcodex\b/],
+    ['gemini', /\bgemini\b|\bgoogle\b/],
+    ['mistral', /\bmistral\b/],
+    ['ollama', /\bollama\b/],
+    ['custom', /\bcustom\b|кастом/i],
+    ['groq', /\bgroq\b/],
+    ['zed', /\bzed\b/],
+    ['xai', /\bxai\b|\bgrok\b/]
+  ]
+
+  return providers.find(([, pattern]) => pattern.test(text))?.[0]
 }
 
 export function createRemoteSetupText(input: string): string {
@@ -251,6 +291,12 @@ function createSetupActions(plan: SetupAgentPlan): SetupAgentAction[] {
   }
   if (plan.modelRouterMode) {
     actions.push({ type: 'model-router-mode', label: `model router: ${plan.modelRouterMode}` })
+  }
+  if (plan.providerHealthCheck) {
+    actions.push({
+      type: 'provider-health',
+      label: `provider health: ${plan.providerHealthProviderId ?? 'configured provider'}`
+    })
   }
   return actions
 }

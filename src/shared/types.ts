@@ -62,6 +62,21 @@ export interface CustomProviderSummary {
   lastError?: string
 }
 
+export type ProviderHealthStatus = 'healthy' | 'unhealthy' | 'not-configured'
+
+export interface ProviderHealthResult {
+  providerId: string
+  label?: string
+  baseUrl: string
+  status: ProviderHealthStatus
+  checkedAt: string
+  latencyMs?: number
+  modelCount?: number
+  selectedModelId?: string
+  selectedModelAvailable?: boolean
+  message: string
+}
+
 export interface SaveCustomProviderPayload {
   providerId?: string
   baseUrl: string
@@ -69,6 +84,51 @@ export interface SaveCustomProviderPayload {
 }
 
 export type ProviderApiFormat = 'openai' | 'anthropic'
+
+export type McpServerTransport = 'http' | 'command'
+
+export interface McpServerSummary {
+  id: string
+  name: string
+  transport: McpServerTransport
+  url: string
+  command: string
+  enabled: boolean
+  createdAt: string
+  updatedAt?: string
+  sourcePresetId?: string
+  description?: string
+  requiredEnv?: string[]
+  envKeys: string[]
+  envConfigured: boolean
+  envRedactedText: string
+}
+
+export interface SaveMcpServerPayload {
+  id?: string
+  name: string
+  transport: McpServerTransport
+  url: string
+  command: string
+  envText?: string
+  enabled?: boolean
+  createdAt?: string
+  sourcePresetId?: string
+  description?: string
+  requiredEnv?: string[]
+}
+
+export interface UpdateMcpServerPayload {
+  name?: string
+  transport?: McpServerTransport
+  url?: string
+  command?: string
+  envText?: string
+  enabled?: boolean
+  sourcePresetId?: string
+  description?: string
+  requiredEnv?: string[]
+}
 
 export interface ProviderPreset {
   id: string
