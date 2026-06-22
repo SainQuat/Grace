@@ -15,7 +15,6 @@ import {
   Image,
   Mail,
   Menu,
-  Mic,
   Moon,
   MoreHorizontal,
   PanelRight,
@@ -190,11 +189,11 @@ const projectIconOptions: Array<{ id: ProjectIconId; label: string; icon: typeof
   { id: 'archive', label: 'Archive', icon: Archive }
 ]
 
-const projectColors = ['#5cc8b7', '#8b5cf6', '#f59e0b', '#ef4444', '#3b82f6', '#22c55e', '#f97316', '#ec4899']
+const projectColors = ['#f97316', '#d97706', '#92400e', '#78716c', '#57534e', '#44403c', '#ef4444', '#22c55e']
 
 const initialProjects: Project[] = [
-  { id: 'project-grace', name: 'Grace', icon: 'bot', color: '#5cc8b7' },
-  { id: 'project-writing', name: 'Writing', icon: 'book', color: '#8b5cf6' }
+  { id: 'project-grace', name: 'Grace', icon: 'bot', color: '#f97316' },
+  { id: 'project-writing', name: 'Writing', icon: 'book', color: '#78716c' }
 ]
 
 const initialSpaces: Space[] = [
@@ -202,7 +201,7 @@ const initialSpaces: Space[] = [
     id: 'space-grace-team',
     name: 'Grace Team',
     icon: 'bot',
-    color: '#3b82f6',
+    color: '#d97706',
     createdAt: new Date(Date.now() - 1000 * 60 * 60 * 12).toISOString(),
     members: [
       {
@@ -225,11 +224,7 @@ const initialSpaces: Space[] = [
 
 const tools: ToolOption[] = [
   { id: 'attach', label: 'Attach file', description: 'Add docs, images, or notes', icon: Paperclip },
-  { id: 'web', label: 'Search web', description: 'Use fresh sources', icon: Search },
-  { id: 'image', label: 'Create image', description: 'Draft a visual prompt', icon: Image },
-  { id: 'canvas', label: 'Open canvas', description: 'Work in a side document', icon: PanelRight },
-  { id: 'voice', label: 'Voice', description: 'Dictate or read aloud', icon: Mic },
-  { id: 'apps', label: 'Connect app', description: 'Prepare an integration', icon: Zap }
+  { id: 'canvas', label: 'Open canvas', description: 'Work in a side document', icon: PanelRight }
 ]
 
 const builtInModels: ModelOption[] = [
@@ -2094,10 +2089,6 @@ function TopBar(props: {
         </div>
       </div>
       <div className="topbar-actions">
-        <button className="text-button" type="button">
-          <ShareIcon />
-          {props.translate('share')}
-        </button>
         <button className="icon-button" type="button" aria-label={themeLabel} title={themeLabel} onClick={props.onToggleTheme}>
           {props.themeMode === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
         </button>
@@ -2386,9 +2377,6 @@ function Composer(props: {
             </button>
           </div>
           <div className="composer-right">
-            <button className="icon-button" type="button" aria-label={props.translate('voice')} title={props.translate('voice')}>
-              <Mic size={18} />
-            </button>
             {props.isStreaming ? (
               <button className="send-button" type="button" aria-label={props.translate('stop')} title={props.translate('stop')} onClick={props.onStop}>
                 <Square size={16} />
@@ -3547,10 +3535,6 @@ function CodeWorkspacePanel(props: {
       )}
     </div>
   )
-}
-
-function ShareIcon(): JSX.Element {
-  return <Copy size={15} />
 }
 
 function useCloseOnOutsideClick<T extends HTMLElement>(

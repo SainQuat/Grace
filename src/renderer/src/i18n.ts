@@ -109,7 +109,6 @@ export const dictionary = {
     setupAgentHelp: 'Ask Grace to prepare providers, models, skills, or MCP servers.',
     setupAgentPlaceholder: 'Example: connect Notion MCP, base URL..., model dugin400',
     setupAgentRoute: 'Route: Zed/custom provider, model dugin400',
-    share: 'Share',
     skills: 'Skills',
     skillMentionHelp: 'Type @ at the start, then press Enter to attach a skill.',
     spaceChats: 'Space chats',
@@ -136,7 +135,6 @@ export const dictionary = {
     toggleTask: 'Toggle task',
     transport: 'Transport',
     unpinChat: 'Unpin chat',
-    voice: 'Voice',
     workingCanvas: 'Working canvas'
   },
   ru: {
@@ -242,7 +240,6 @@ export const dictionary = {
     setupAgentHelp: 'Попросите Grace подготовить провайдеры, модели, скиллы или MCP серверы.',
     setupAgentPlaceholder: 'Например: подключи Notion MCP, base URL..., модель dugin400',
     setupAgentRoute: 'Маршрут: Zed/custom provider, модель dugin400',
-    share: 'Поделиться',
     skills: 'Скиллы',
     skillMentionHelp: 'Напишите @ в начале, затем Enter, чтобы прикрепить скилл.',
     spaceChats: 'Чаты пространства',
@@ -269,7 +266,6 @@ export const dictionary = {
     toggleTask: 'Переключить задачу',
     transport: 'Транспорт',
     unpinChat: 'Открепить чат',
-    voice: 'Голос',
     workingCanvas: 'Рабочий canvas'
   }
 } as const
