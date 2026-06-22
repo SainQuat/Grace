@@ -1,4 +1,4 @@
-import type { ChatRequestPayload, ProviderModel } from './types'
+import type { ChatMessagePayload, ChatRequestPayload, ProviderApiFormat, ProviderModel } from './types'
 
 export function normalizeBaseUrl(value: string): string {
   const trimmedValue = value.trim().replace(/\/+$/, '')
@@ -55,7 +55,15 @@ export function parseOpenAIModelList(payload: unknown): ProviderModel[] {
     .filter((model): model is ProviderModel => Boolean(model))
 }
 
-export async function fetchProviderModels(baseUrl: string, apiKey: string): Promise<ProviderModel[]> {
+export async function fetchProviderModels(
+  baseUrl: string,
+  apiKey: string,
+  apiFormat: ProviderApiFormat = 'openai'
+): Promise<ProviderModel[]> {
+  if (apiFormat === 'anthropic') {
+    return fetchAnthropicModels(baseUrl, apiKey)
+  }
+
   const response = await fetch(buildProviderUrl(baseUrl, '/models'), {
     method: 'GET',
     headers: providerHeaders(apiKey)
@@ -79,8 +87,14 @@ export async function* streamProviderChat(
   baseUrl: string,
   apiKey: string,
   payload: ChatRequestPayload,
-  signal: AbortSignal
+  signal: AbortSignal,
+  apiFormat: ProviderApiFormat = 'openai'
 ): AsyncGenerator<string> {
+  if (apiFormat === 'anthropic') {
+    yield* streamAnthropicChat(baseUrl, apiKey, payload, signal)
+    return
+  }
+
   const response = await fetch(buildProviderUrl(baseUrl, '/chat/completions'), {
     method: 'POST',
     headers: providerHeaders(apiKey),
@@ -123,6 +137,78 @@ export async function* streamProviderChat(
   }
 }
 
+async function fetchAnthropicModels(baseUrl: string, apiKey: string): Promise<ProviderModel[]> {
+  const response = await fetch(buildProviderUrl(baseUrl, '/models'), {
+    method: 'GET',
+    headers: anthropicHeaders(apiKey)
+  })
+
+  if (!response.ok) {
+    throw new Error(await createProviderErrorMessage(response, 'models'))
+  }
+
+  const payload = await response.json()
+  const models = parseOpenAIModelList(payload)
+
+  if (models.length === 0) {
+    throw new Error('Провайдер не вернул моделей.')
+  }
+
+  return models
+}
+
+async function* streamAnthropicChat(
+  baseUrl: string,
+  apiKey: string,
+  payload: ChatRequestPayload,
+  signal: AbortSignal
+): AsyncGenerator<string> {
+  const response = await fetch(buildProviderUrl(baseUrl, '/messages'), {
+    method: 'POST',
+    headers: anthropicHeaders(apiKey),
+    signal,
+    body: JSON.stringify({
+      model: payload.modelId,
+      max_tokens: 4096,
+      messages: toAnthropicMessages(payload.messages),
+      stream: true
+    })
+  })
+
+  if (!response.ok) {
+    throw new Error(await createProviderErrorMessage(response, 'message'))
+  }
+
+  if (!response.body) {
+    throw new Error('Ответ провайдера не содержит stream body.')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() ?? ''
+
+    for (const line of lines) {
+      const text = parseAnthropicStreamLine(line)
+      if (text) yield text
+    }
+  }
+}
+
+function toAnthropicMessages(messages: ChatMessagePayload[]): ChatMessagePayload[] {
+  return messages.map((message) => ({
+    role: message.role === 'assistant' ? 'assistant' : 'user',
+    content: message.content
+  }))
+}
+
 function extractModelRows(payload: unknown): unknown[] {
   if (Array.isArray(payload)) return payload
   if (!payload || typeof payload !== 'object') return []
@@ -147,10 +233,52 @@ function providerHeaders(apiKey: string): Record<string, string> {
   }
 }
 
+function anthropicHeaders(apiKey: string): Record<string, string> {
+  const trimmedApiKey = apiKey.trim()
+
+  if (!trimmedApiKey) {
+    throw new Error('API key обязателен.')
+  }
+
+  return {
+    'x-api-key': trimmedApiKey,
+    'anthropic-version': '2023-06-01',
+    'Content-Type': 'application/json'
+  }
+}
+
 async function createProviderErrorMessage(response: Response, action: string): Promise<string> {
   const body = await response.text()
   const detail = body ? ` ${body.slice(0, 240)}` : ''
   return `Запрос провайдера (${action}) завершился с HTTP ${response.status}.${detail}`
+}
+
+function parseAnthropicStreamLine(line: string): string | null {
+  const trimmedLine = line.trim()
+
+  if (!trimmedLine || trimmedLine.startsWith(':') || !trimmedLine.startsWith('data:')) {
+    return null
+  }
+
+  try {
+    const payload = JSON.parse(trimmedLine.slice('data:'.length).trim()) as {
+      type?: string
+      delta?: { text?: string }
+      content_block?: { text?: string }
+    }
+
+    if (payload.type === 'content_block_delta') {
+      return payload.delta?.text ?? null
+    }
+
+    if (payload.type === 'content_block_start') {
+      return payload.content_block?.text ?? null
+    }
+
+    return null
+  } catch {
+    return null
+  }
 }
 
 function parseStreamLine(line: string): string | null {
@@ -164,7 +292,7 @@ function parseStreamLine(line: string): string | null {
     return null
   }
 
-  const data = trimmedLine.slice(5).trim()
+  const data = trimmedLine.slice('data:'.length).trim()
   if (data === '[DONE]') return '[DONE]'
 
   try {

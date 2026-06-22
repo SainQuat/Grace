@@ -4,8 +4,13 @@ import type {
   ChatRequestPayload,
   ChatStreamEvent,
   CustomProviderSummary,
+  ProviderApiFormat,
   ProviderModel,
-  SaveCustomProviderPayload
+  ResponseNotificationPayload,
+  ResponseNotificationResult,
+  SaveCustomProviderPayload,
+  SetupAgentRequestPayload,
+  SetupAgentResponse
 } from '../../shared/types'
 
 export interface GraceApi {
@@ -13,11 +18,17 @@ export interface GraceApi {
   stopChat(requestId: string): void
   onChatEvent(callback: (event: ChatStreamEvent) => void): () => void
   getCustomProvider(): Promise<CustomProviderSummary>
+  getProviders(): Promise<CustomProviderSummary[]>
   saveCustomProvider(payload: SaveCustomProviderPayload): Promise<CustomProviderSummary>
-  refreshCustomProviderModels(): Promise<CustomProviderSummary>
+  refreshCustomProviderModels(providerId?: string): Promise<CustomProviderSummary>
+  showResponseNotification(payload: ResponseNotificationPayload): Promise<ResponseNotificationResult>
+  askSetupAgent(payload: SetupAgentRequestPayload): Promise<SetupAgentResponse>
 }
 
 interface BrowserStoredProvider {
+  id?: string
+  label?: string
+  apiFormat?: ProviderApiFormat
   baseUrl: string
   apiKey: string
   models: ProviderModel[]
@@ -99,11 +110,20 @@ function createBrowserGraceApi(): GraceApi {
       return storedProvider ? toSummary(storedProvider) : createEmptySummary()
     },
 
+    async getProviders() {
+      const storedProvider = readStoredProvider()
+      return [storedProvider ? toSummary(storedProvider) : createEmptySummary()]
+    },
+
     async saveCustomProvider(payload) {
       const baseUrl = normalizeBaseUrl(payload.baseUrl)
       const apiKey = payload.apiKey.trim()
-      const models = await fetchProviderModels(baseUrl, apiKey)
+      const apiFormat: ProviderApiFormat = 'openai'
+      const models = await fetchProviderModels(baseUrl, apiKey, apiFormat)
       const provider: BrowserStoredProvider = {
+        id: payload.providerId ?? 'custom',
+        label: 'Custom provider',
+        apiFormat,
         baseUrl,
         apiKey,
         models,
@@ -115,13 +135,13 @@ function createBrowserGraceApi(): GraceApi {
       return toSummary(provider)
     },
 
-    async refreshCustomProviderModels() {
+    async refreshCustomProviderModels(_providerId = 'custom') {
       const storedProvider = readStoredProvider()
       if (!storedProvider) {
         throw new Error('Свой провайдер не настроен.')
       }
 
-      const models = await fetchProviderModels(storedProvider.baseUrl, storedProvider.apiKey)
+      const models = await fetchProviderModels(storedProvider.baseUrl, storedProvider.apiKey, storedProvider.apiFormat ?? 'openai')
       const nextProvider: BrowserStoredProvider = {
         ...storedProvider,
         models,
@@ -131,6 +151,18 @@ function createBrowserGraceApi(): GraceApi {
 
       localStorage.setItem(providerStorageKey, JSON.stringify(nextProvider))
       return toSummary(nextProvider)
+    },
+
+    async showResponseNotification(_payload) {
+      return { shown: false, reason: 'unsupported' }
+    },
+
+    async askSetupAgent(payload) {
+      return {
+        configured: false,
+        modelId: payload.modelId,
+        content: 'Setup agent доступен только в desktop-версии.'
+      }
     }
   }
 }
@@ -167,6 +199,9 @@ function readStoredProvider(): BrowserStoredProvider | null {
     }
 
     return {
+      id: candidate.id,
+      label: candidate.label,
+      apiFormat: candidate.apiFormat,
       baseUrl: candidate.baseUrl,
       apiKey: candidate.apiKey,
       models: candidate.models,
@@ -180,6 +215,9 @@ function readStoredProvider(): BrowserStoredProvider | null {
 
 function toSummary(provider: BrowserStoredProvider): CustomProviderSummary {
   return {
+    id: provider.id ?? 'custom',
+    label: provider.label ?? 'Custom provider',
+    apiFormat: provider.apiFormat ?? 'openai',
     baseUrl: provider.baseUrl,
     configured: Boolean(provider.apiKey),
     models: provider.models,
@@ -190,6 +228,9 @@ function toSummary(provider: BrowserStoredProvider): CustomProviderSummary {
 
 function createEmptySummary(): CustomProviderSummary {
   return {
+    id: 'custom',
+    label: 'Custom provider',
+    apiFormat: 'openai',
     baseUrl: '',
     configured: false,
     models: []

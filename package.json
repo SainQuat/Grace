@@ -1,8 +1,9 @@
 {
   "name": "grace",
-  "version": "0.1.0",
+  "version": "0.1.13",
   "private": true,
   "description": "Local-first desktop AI chat client.",
+  "author": "Igor Barchuk",
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
@@ -12,6 +13,7 @@
     "dev:web": "vite --config vite.web.config.ts",
     "build": "tsc --noEmit && electron-vite build",
     "build:web": "tsc --noEmit && vite build --config vite.web.config.ts",
+    "dist:mac": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg --arm64 --x64 --publish never",
     "preview": "npm run ensure:electron && electron-vite preview",
     "preview:web": "vite preview --config vite.web.config.ts",
     "smoke:provider": "node scripts/smoke-provider.mjs",
@@ -30,6 +32,7 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^5.2.0",
     "electron": "^42.4.1",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "typescript": "^5.5.3",
     "vite": "^7.3.5",
@@ -37,5 +40,48 @@
   },
   "overrides": {
     "esbuild": "0.28.1"
+  },
+  "build": {
+    "appId": "com.sainquat.grace",
+    "productName": "Grace",
+    "asar": true,
+    "afterPack": "./scripts/codesign-mac-app.mjs",
+    "directories": {
+      "buildResources": "resources",
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "resources/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "Grace ${version}",
+      "artifactName": "Grace-${version}-${arch}.${ext}",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
   }
 }

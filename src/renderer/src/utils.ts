@@ -10,6 +10,208 @@ export function createDraftTitle(input: string): string {
   return normalized.length > 42 ? `${normalized.slice(0, 39)}...` : normalized
 }
 
+export function createNotificationBody(input: string, maxLength = 160): string {
+  const normalized = input.replace(/\s+/g, ' ').trim()
+
+  if (!normalized || maxLength <= 0) {
+    return ''
+  }
+
+  if (normalized.length <= maxLength) {
+    return normalized
+  }
+
+  const sliceLength = Math.max(0, maxLength - 3)
+  return `${normalized.slice(0, sliceLength).trimEnd()}...`
+}
+
+export interface ProviderGroupedItem {
+  id: string
+  provider: string
+  providerKind: 'demo' | 'custom'
+  providerId?: string
+  hint?: string
+}
+
+export interface ModelSearchItem extends ProviderGroupedItem {
+  modelId?: string
+  label?: string
+  description?: string
+}
+
+export interface SkillSearchItem {
+  id: string
+  name: string
+  description: string
+  appliesTo: string[]
+}
+
+export interface ExtractedCodeBlock {
+  language: string
+  code: string
+}
+
+export interface ProviderModelGroup<T extends ProviderGroupedItem> {
+  id: string
+  label: string
+  detail?: string
+  models: T[]
+}
+
+export function groupModelsByProvider<T extends ProviderGroupedItem>(models: T[]): ProviderModelGroup<T>[] {
+  const groups: ProviderModelGroup<T>[] = []
+
+  for (const model of models) {
+    const isCustom = model.providerKind === 'custom'
+    const groupId = isCustom ? `custom:${model.providerId ?? model.provider}` : `demo:${model.provider}`
+    const existingGroup = groups.find((group) => group.id === groupId)
+
+    if (existingGroup) {
+      existingGroup.models.push(model)
+      continue
+    }
+
+    groups.push({
+      id: groupId,
+      label: model.provider,
+      detail: isCustom ? model.hint : undefined,
+      models: [model]
+    })
+  }
+
+  return groups
+}
+
+export function filterModelsByQuery<T extends ModelSearchItem>(models: T[], query: string): T[] {
+  const normalizedQuery = query.trim().toLowerCase()
+
+  if (!normalizedQuery) {
+    return models
+  }
+
+  const tokens = normalizedQuery.split(/\s+/).filter(Boolean)
+
+  return models.filter((model) => {
+    const searchableText = [
+      model.id,
+      model.modelId,
+      model.label
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+
+    return tokens.every((token) => searchableText.includes(token))
+  })
+}
+
+export function getLeadingSkillMentionQuery(value: string): string | null {
+  const match = /^@([^\n]*)$/.exec(value)
+  return match ? match[1].trimStart() : null
+}
+
+export function filterSkillsByQuery<T extends SkillSearchItem>(skills: T[], query: string): T[] {
+  const normalizedQuery = query.trim().toLowerCase()
+
+  if (!normalizedQuery) {
+    return skills
+  }
+
+  const tokens = normalizedQuery.split(/\s+/).filter(Boolean)
+
+  return skills.filter((skill) => {
+    const searchableText = [
+      skill.id,
+      skill.name,
+      skill.description,
+      ...skill.appliesTo
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+
+    return tokens.every((token) => searchableText.includes(token))
+  })
+}
+
+export function detectCodeIntent(input: string): boolean {
+  const normalized = input.toLowerCase().trim()
+
+  if (!normalized) {
+    return false
+  }
+
+  if (normalized.includes('```')) {
+    return true
+  }
+
+  const directCodeTerms = [
+    'код',
+    'кода',
+    'кодом',
+    'html',
+    'css',
+    'javascript',
+    'typescript',
+    'react',
+    'jsx',
+    'tsx',
+    'node',
+    'python',
+    'script',
+    'function',
+    'component',
+    'компонент',
+    'функц',
+    'скрипт',
+    'верст',
+    'страниц'
+  ]
+
+  const actionTerms = [
+    'напиши',
+    'сделай',
+    'создай',
+    'сгенерируй',
+    'добавь',
+    'исправь',
+    'доработай',
+    'build',
+    'create',
+    'write',
+    'generate',
+    'fix',
+    'refactor'
+  ]
+
+  return (
+    directCodeTerms.some((term) => normalized.includes(term)) &&
+    (actionTerms.some((term) => normalized.includes(term)) || /\b(html|css|js|ts|jsx|tsx)\b/.test(normalized))
+  )
+}
+
+export function extractFirstCodeBlock(markdown: string): ExtractedCodeBlock | null {
+  const fencedBlock = /```([a-zA-Z0-9_-]*)[ \t]*\n([\s\S]*?)```/.exec(markdown)
+
+  if (fencedBlock) {
+    return {
+      language: fencedBlock[1]?.trim().toLowerCase() || 'text',
+      code: fencedBlock[2].replace(/\s+$/, '')
+    }
+  }
+
+  const trimmed = markdown.trim()
+
+  if (/<!doctype html|<html[\s>]|<body[\s>]/i.test(trimmed)) {
+    return {
+      language: 'html',
+      code: trimmed
+    }
+  }
+
+  return null
+}
+
 export function uid(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
