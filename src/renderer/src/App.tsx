@@ -39,7 +39,7 @@ import {
   X,
   Zap
 } from 'lucide-react'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { mcpMarketplacePresets } from '../../shared/mcpMarketplace'
@@ -47,7 +47,8 @@ import { providerPresets } from '../../shared/providerPresets'
 import type { ChatMessagePayload, ChatStreamEvent, CustomProviderSummary, ProviderModel, SkillSummary } from '../../shared/types'
 import { advanceAgentRun, createAgentRun, getAgentRunProgress, setAgentRunExpanded, type AgentRun } from './agentWorkflow'
 import { locales, translate, type Locale, type Translate, type TranslationKey } from './i18n'
-import { createSetupAgentPlan } from './setupAgent'
+import { createPersistentStateEnvelope, ensureArrayNonEmpty, safeParsePersistentValue } from './persistentState'
+import { createSetupAgentPlan, redactSetupSecrets, shouldAskRemoteSetupAgent } from './setupAgent'
 import {
   createDraftTitle,
   createNotificationBody,
@@ -236,7 +237,7 @@ const projectIconOptions: Array<{ id: ProjectIconId; label: string; icon: typeof
   { id: 'archive', label: 'Archive', icon: Archive }
 ]
 
-const projectColors = ['#f97316', '#d97706', '#92400e', '#78716c', '#57534e', '#44403c', '#ef4444', '#22c55e']
+const projectColors = ['#f97316', '#ea580c', '#d97706', '#92400e', '#78716c', '#57534e', '#44403c', '#302c25']
 
 const initialProjects: Project[] = [
   { id: 'project-grace', name: 'Grace', icon: 'bot', color: '#f97316' },
@@ -483,7 +484,7 @@ const initialPromptTemplates: PromptTemplate[] = [
 const initialPrivacySettings: PrivacySettings = {
   localOnly: false,
   allowNotifications: true,
-  allowRemoteSetupAgent: true
+  allowRemoteSetupAgent: false
 }
 
 function resolveChatProjectId(chat: Chat, projects: Project[]): string | undefined {
@@ -568,11 +569,11 @@ function createCodeRevisionPrompt(code: string, selectedText: string, instructio
 }
 
 export function App(): JSX.Element {
-  const [chats, setChats] = usePersistentState<Chat[]>('grace.chats', initialChats)
+  const [chats, setChats] = usePersistentState<Chat[]>('grace.chats', initialChats, ensureArrayNonEmpty)
   const [activeChatId, setActiveChatId] = usePersistentState<string>('grace.activeChatId', initialChats[0].id)
   const [sidebarOpen, setSidebarOpen] = usePersistentState('grace.sidebarOpen', true)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
-  const [canvasOpen, setCanvasOpen] = usePersistentState('grace.canvasOpen', true)
+  const [canvasOpen, setCanvasOpen] = usePersistentState('grace.canvasOpen', false)
   const [rightPanelMode, setRightPanelMode] = usePersistentState<RightPanelMode>('grace.rightPanelMode', 'canvas')
   const [canvasValue, setCanvasValue] = usePersistentState('grace.canvasValue', canvasInitialValue)
   const [libraryFiles, setLibraryFiles] = usePersistentState<LibraryFile[]>('grace.libraryFiles', [])
@@ -612,6 +613,7 @@ export function App(): JSX.Element {
   const [usageRecords, setUsageRecords] = usePersistentState<UsageRecord[]>('grace.usageRecords', [])
   const [privacySettings, setPrivacySettings] = usePersistentState<PrivacySettings>('grace.privacySettings', initialPrivacySettings)
   const [modelRouterMode, setModelRouterMode] = usePersistentState<ModelRouterMode>('grace.modelRouterMode', 'manual')
+  const [sidebarSearch, setSidebarSearch] = useState('')
   const [setupAgentOpen, setSetupAgentOpen] = useState(false)
   const [setupAgentMessages, setSetupAgentMessages] = usePersistentState<SetupAgentMessage[]>(
     'grace.setupAgentMessages',
@@ -673,7 +675,7 @@ export function App(): JSX.Element {
       ]),
     [activeChat.id, activeChat.projectId, activeChat.spaceId, activeProjectId, activeSpaceId, memoryEntries]
   )
-  const visibleChats = useMemo(
+  const scopedChats = useMemo(
     () =>
       activeSpaceId
         ? chats.filter((chat) => chat.spaceId === activeSpaceId)
@@ -681,6 +683,32 @@ export function App(): JSX.Element {
         ? chats.filter((chat) => resolveChatProjectId(chat, projects) === activeProjectId)
         : chats,
     [activeProjectId, activeSpaceId, chats, projects]
+  )
+  const normalizedSidebarSearch = sidebarSearch.trim().toLowerCase()
+  const visibleChats = useMemo(
+    () =>
+      normalizedSidebarSearch
+        ? scopedChats.filter((chat) =>
+            [chat.title, chat.project, chat.messages.at(-1)?.content ?? ''].some((value) =>
+              value?.toLowerCase().includes(normalizedSidebarSearch)
+            )
+          )
+        : scopedChats,
+    [normalizedSidebarSearch, scopedChats]
+  )
+  const visibleProjects = useMemo(
+    () =>
+      normalizedSidebarSearch
+        ? projects.filter((project) => project.name.toLowerCase().includes(normalizedSidebarSearch))
+        : projects,
+    [normalizedSidebarSearch, projects]
+  )
+  const visibleSpaces = useMemo(
+    () =>
+      normalizedSidebarSearch
+        ? spaces.filter((space) => space.name.toLowerCase().includes(normalizedSidebarSearch))
+        : spaces,
+    [normalizedSidebarSearch, spaces]
   )
   const routedModel = modelRouterMode === 'manual' ? undefined : selectModelForRouter(availableModels, modelRouterMode, providers)
   const selectedModel = routedModel ?? availableModels.find((model) => model.id === modelId) ?? availableModels[0]
@@ -690,11 +718,10 @@ export function App(): JSX.Element {
   const isStreaming = Boolean(activeChatRequestId)
   const runningChatIds = useMemo(() => new Set(Object.values(activeRequests)), [activeRequests])
   const usageSummary = useMemo(() => summarizeUsage(usageRecords), [usageRecords])
-  const nextThemeMode: ThemeMode = themeMode === 'dark' ? 'light' : 'dark'
 
   useLayoutEffect(() => {
-    document.documentElement.dataset.theme = themeMode
-  }, [themeMode])
+    document.documentElement.dataset.theme = 'dark'
+  }, [])
 
   useLayoutEffect(() => {
     document.documentElement.dataset.platform = navigator.platform.toLowerCase().includes('mac') ? 'darwin' : 'other'
@@ -755,6 +782,12 @@ export function App(): JSX.Element {
   }, [activeSpaceId, spaces, setActiveSpaceId])
 
   useEffect(() => {
+    if (!chats.some((chat) => chat.id === activeChatId)) {
+      setActiveChatId((chats[0] ?? initialChats[0]).id)
+    }
+  }, [activeChatId, chats, setActiveChatId])
+
+  useEffect(() => {
     setChats((currentChats) => {
       let changed = false
       const migratedChats = currentChats.map((chat) => {
@@ -777,15 +810,41 @@ export function App(): JSX.Element {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
-        setToolMenuOpen(false)
-        setModelMenuOpen(false)
-        setMobileSidebarOpen(false)
-        setProviderSettingsOpen(false)
-        setCommandPaletteOpen(false)
-        setProjectDialog(null)
-        setSpaceDialog(null)
-        setSkillsOpen(false)
-        setSetupAgentOpen(false)
+        if (commandPaletteOpen) {
+          setCommandPaletteOpen(false)
+          return
+        }
+        if (providerSettingsOpen) {
+          setProviderSettingsOpen(false)
+          return
+        }
+        if (setupAgentOpen) {
+          setSetupAgentOpen(false)
+          return
+        }
+        if (skillsOpen) {
+          setSkillsOpen(false)
+          return
+        }
+        if (projectDialog) {
+          setProjectDialog(null)
+          return
+        }
+        if (spaceDialog) {
+          setSpaceDialog(null)
+          return
+        }
+        if (toolMenuOpen) {
+          setToolMenuOpen(false)
+          return
+        }
+        if (modelMenuOpen) {
+          setModelMenuOpen(false)
+          return
+        }
+        if (mobileSidebarOpen) {
+          setMobileSidebarOpen(false)
+        }
       }
 
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
@@ -796,7 +855,7 @@ export function App(): JSX.Element {
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  }, [commandPaletteOpen, mobileSidebarOpen, modelMenuOpen, projectDialog, providerSettingsOpen, setupAgentOpen, skillsOpen, spaceDialog, toolMenuOpen])
 
   function handleStreamEvent(event: ChatStreamEvent): void {
     const targetChatId = requestChatRef.current[event.requestId] ?? activeChatIdRef.current
@@ -1659,7 +1718,7 @@ export function App(): JSX.Element {
     const userMessage: SetupAgentMessage = {
       id: uid('setup-user'),
       role: 'user',
-      content: trimmedInput
+      content: redactSetupSecrets(trimmedInput)
     }
     setSetupAgentMessages((currentMessages) => [...currentMessages, userMessage])
 
@@ -1679,13 +1738,27 @@ export function App(): JSX.Element {
     }
 
     if (plan.themeMode) {
-      setThemeMode(plan.themeMode)
-      localNotes.push(`тема: ${plan.themeMode === 'light' ? 'светлая' : 'темная'}`)
+      setThemeMode('dark')
+      localNotes.push(plan.themeMode === 'light' ? 'тема: темная (светлая тема отключена в этом релизе)' : 'тема: темная')
     }
 
     if (plan.locale) {
       setLocale(plan.locale)
       localNotes.push(`язык: ${plan.locale === 'ru' ? 'русский' : 'английский'}`)
+    }
+
+    if (typeof plan.privacyLocalOnly === 'boolean') {
+      const localOnly = plan.privacyLocalOnly
+      setPrivacySettings((currentSettings) => ({
+        ...currentSettings,
+        localOnly
+      }))
+      localNotes.push(`приватность: ${localOnly ? 'только локальные модели' : 'удаленные модели разрешены'}`)
+    }
+
+    if (plan.modelRouterMode) {
+      setModelRouterMode(plan.modelRouterMode)
+      localNotes.push(`роутер моделей: ${plan.modelRouterMode}`)
     }
 
     if (plan.mcpServer) {
@@ -1731,15 +1804,24 @@ export function App(): JSX.Element {
       providers.find((provider) => provider.configured && provider.baseUrl.includes('api.zed.md')) ??
       providers.find((provider) => provider.id === 'custom' && provider.configured)
     let remoteAnswer = ''
-    try {
-      const answer = await window.graceAI.askSetupAgent({
-        providerId: setupProvider?.id ?? 'zed',
-        modelId: 'dugin400',
-        messages: [{ role: 'user', content: trimmedInput }]
+    if (
+      shouldAskRemoteSetupAgent({
+        allowRemoteSetupAgent: privacySettings.allowRemoteSetupAgent,
+        localOnly: privacySettings.localOnly,
+        planPrivacyLocalOnly: plan.privacyLocalOnly,
+        remoteSetupText: plan.remoteSetupText
       })
-      remoteAnswer = answer.configured || localNotes.length === 0 ? answer.content : ''
-    } catch (error) {
-      remoteAnswer = localNotes.length === 0 ? (error instanceof Error ? error.message : 'Setup agent request failed.') : ''
+    ) {
+      try {
+        const answer = await window.graceAI.askSetupAgent({
+          providerId: setupProvider?.id ?? 'zed',
+          modelId: 'dugin400',
+          messages: [{ role: 'user', content: plan.remoteSetupText }]
+        })
+        remoteAnswer = answer.configured || localNotes.length === 0 ? answer.content : ''
+      } catch (error) {
+        remoteAnswer = localNotes.length === 0 ? (error instanceof Error ? error.message : 'Setup agent request failed.') : ''
+      }
     }
 
     const assistantContent = [
@@ -1764,14 +1846,15 @@ export function App(): JSX.Element {
       <ProjectSidebar
         chats={visibleChats}
         allChats={chats}
-        projects={projects}
-        spaces={spaces}
+        projects={visibleProjects}
+        spaces={visibleSpaces}
         activeProjectId={activeProjectId}
         activeSpaceId={activeSpaceId}
         activeChatId={activeChat.id}
         open={sidebarOpen}
         mobileOpen={mobileSidebarOpen}
         rightPanelMode={rightPanelMode}
+        searchQuery={sidebarSearch}
         projectsCollapsed={projectsCollapsed}
         spacesCollapsed={spacesCollapsed}
         runningChatIds={runningChatIds}
@@ -1780,6 +1863,7 @@ export function App(): JSX.Element {
         onMobileClose={() => setMobileSidebarOpen(false)}
         onToggleProjectsCollapsed={() => setProjectsCollapsed((collapsed) => !collapsed)}
         onToggleSpacesCollapsed={() => setSpacesCollapsed((collapsed) => !collapsed)}
+        onSearchChange={setSidebarSearch}
         onNewChat={createNewChat}
         onNewProject={createProject}
         onNewSpace={createSpace}
@@ -1825,14 +1909,12 @@ export function App(): JSX.Element {
           project={activeProject}
           space={activeSpace}
           model={selectedModel}
-          themeMode={themeMode}
           translate={t}
           sidebarOpen={sidebarOpen}
           canvasOpen={canvasOpen}
           onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
           onToggleSidebar={() => setSidebarOpen((open) => !open)}
           onToggleCanvas={() => setCanvasOpen((open) => !open)}
-          onToggleTheme={() => setThemeMode(nextThemeMode)}
           onOpenCommandPalette={() => setCommandPaletteOpen(true)}
         />
 
@@ -2037,7 +2119,6 @@ export function App(): JSX.Element {
             setRightPanelMode(mode)
             setCanvasOpen(true)
           }}
-          onToggleTheme={() => setThemeMode(nextThemeMode)}
           onModelRouterModeChange={setModelRouterMode}
           onInsertPrompt={insertPromptTemplate}
         />
@@ -2056,7 +2137,6 @@ function CommandPalette(props: {
   onOpenSkills: () => void
   onOpenSetupAgent: () => void
   onOpenPanel: (mode: RightPanelMode) => void
-  onToggleTheme: () => void
   onModelRouterModeChange: (mode: ModelRouterMode) => void
   onInsertPrompt: (template: PromptTemplate) => void
 }): JSX.Element {
@@ -2077,8 +2157,7 @@ function CommandPalette(props: {
     { id: 'memory', label: props.translate('memory'), detail: props.translate('memoryHelp'), icon: <BookOpen size={16} />, action: () => props.onOpenPanel('memory') },
     { id: 'code', label: props.translate('codeWorkspace'), detail: props.translate('codeWorkspaceHelp'), icon: <Code2 size={16} />, action: () => props.onOpenPanel('code') },
     { id: 'checkpoints', label: props.translate('checkpoints'), detail: props.translate('checkpointsHelp'), icon: <History size={16} />, action: () => props.onOpenPanel('checkpoints') },
-    { id: 'usage', label: props.translate('usage'), detail: props.translate('usageHelp'), icon: <BarChart3 size={16} />, action: () => props.onOpenPanel('usage') },
-    { id: 'theme', label: props.translate('theme'), detail: 'Toggle light/dark', icon: <Sun size={16} />, action: props.onToggleTheme }
+    { id: 'usage', label: props.translate('usage'), detail: props.translate('usageHelp'), icon: <BarChart3 size={16} />, action: () => props.onOpenPanel('usage') }
   ]
   const visibleCommands = commands.filter((command) =>
     normalizedQuery ? `${command.label} ${command.detail}`.toLowerCase().includes(normalizedQuery) : true
@@ -2167,6 +2246,7 @@ function ProjectSidebar(props: {
   open: boolean
   mobileOpen: boolean
   rightPanelMode: RightPanelMode
+  searchQuery: string
   projectsCollapsed: boolean
   spacesCollapsed: boolean
   runningChatIds: Set<string>
@@ -2175,6 +2255,7 @@ function ProjectSidebar(props: {
   onMobileClose: () => void
   onToggleProjectsCollapsed: () => void
   onToggleSpacesCollapsed: () => void
+  onSearchChange: (query: string) => void
   onNewChat: () => void
   onNewProject: () => void
   onNewSpace: () => void
@@ -2221,7 +2302,13 @@ function ProjectSidebar(props: {
           <>
             <label className="search-box">
               <Search size={16} />
-              <input type="search" placeholder={t('searchChats')} aria-label={t('searchChats')} />
+              <input
+                type="search"
+                value={props.searchQuery}
+                placeholder={t('searchChats')}
+                aria-label={t('searchChats')}
+                onChange={(event) => props.onSearchChange(event.target.value)}
+              />
             </label>
 
             <button
@@ -2320,6 +2407,9 @@ function ProjectSidebar(props: {
                   onDelete={props.onDeleteChat}
                 />
               ))}
+              {props.searchQuery.trim() && recentChats.length === 0 ? (
+                <div className="sidebar-empty-state">{t('searchEmpty')}</div>
+              ) : null}
             </SidebarSection>
           </>
         ) : (
@@ -2371,30 +2461,6 @@ function ProjectSidebar(props: {
             >
               <Clock3 size={15} />
               <span>{t('scheduledTasks')}</span>
-            </button>
-            <button
-              className={`sidebar-row ${props.rightPanelMode === 'memory' ? 'active' : ''}`}
-              type="button"
-              onClick={props.onOpenMemory}
-            >
-              <BookOpen size={15} />
-              <span>{t('memory')}</span>
-            </button>
-            <button
-              className={`sidebar-row ${props.rightPanelMode === 'checkpoints' ? 'active' : ''}`}
-              type="button"
-              onClick={props.onOpenCheckpoints}
-            >
-              <History size={15} />
-              <span>{t('checkpoints')}</span>
-            </button>
-            <button
-              className={`sidebar-row ${props.rightPanelMode === 'usage' ? 'active' : ''}`}
-              type="button"
-              onClick={props.onOpenUsage}
-            >
-              <BarChart3 size={15} />
-              <span>{t('usage')}</span>
             </button>
             <button className="sidebar-row" type="button" onClick={props.onOpenProviderSettings}>
               <Settings size={15} />
@@ -2692,18 +2758,14 @@ function TopBar(props: {
   project: Project | null
   space: Space | null
   model: ModelOption
-  themeMode: ThemeMode
   translate: Translate
   sidebarOpen: boolean
   canvasOpen: boolean
   onOpenMobileSidebar: () => void
   onToggleSidebar: () => void
   onToggleCanvas: () => void
-  onToggleTheme: () => void
   onOpenCommandPalette: () => void
 }): JSX.Element {
-  const themeLabel = props.themeMode === 'dark' ? props.translate('light') : props.translate('dark')
-
   return (
     <header className="topbar">
       <div className="topbar-left">
@@ -2725,18 +2787,19 @@ function TopBar(props: {
         </div>
       </div>
       <div className="topbar-actions">
+        <div className="route-chip" title={`${props.model.provider} · ${props.model.label}`}>
+          <span>{props.translate('routeChip')}</span>
+          <strong>{props.model.providerKind === 'demo' ? props.translate('routeChipDemo') : props.translate('routeChipRemote')}</strong>
+        </div>
         <button className="text-button desktop-only" type="button" onClick={props.onOpenCommandPalette}>
           <Search size={15} />
           Cmd K
         </button>
-        <button className="icon-button" type="button" aria-label={themeLabel} title={themeLabel} onClick={props.onToggleTheme}>
-          {props.themeMode === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-        </button>
         <button
           className={`icon-button ${props.canvasOpen ? 'active' : ''}`}
           type="button"
-          aria-label={props.translate('toggleCanvas')}
-          title={props.translate('toggleCanvas')}
+          aria-label={props.translate('workspacePanel')}
+          title={props.translate('workspacePanel')}
           onClick={props.onToggleCanvas}
         >
           <PanelRight size={18} />
@@ -3023,7 +3086,7 @@ function Composer(props: {
 
             if (skillMenuOpen && event.key === 'Escape') {
               event.preventDefault()
-              props.onValueChange('')
+              props.onValueChange(props.value.replace(/^@\S*/, '').trimStart())
               return
             }
 
@@ -3054,10 +3117,24 @@ function Composer(props: {
 
         <div className="composer-footer">
           <div className="composer-left">
-            <button className="icon-button" type="button" aria-label={props.translate('connectApp')} title={props.translate('connectApp')} onClick={props.onToggleToolMenu}>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label={props.translate('connectApp')}
+              title={props.translate('connectApp')}
+              aria-haspopup="menu"
+              aria-expanded={props.toolMenuOpen}
+              onClick={props.onToggleToolMenu}
+            >
               <Plus size={18} />
             </button>
-            <button className="model-chip" type="button" onClick={props.onToggleModelMenu}>
+            <button
+              className="model-chip"
+              type="button"
+              aria-haspopup="listbox"
+              aria-expanded={props.modelMenuOpen}
+              onClick={props.onToggleModelMenu}
+            >
               {props.selectedModel.label}
               <ChevronDown size={14} />
             </button>
@@ -3245,6 +3322,7 @@ function ProjectDialog(props: {
   const [icon, setIcon] = useState<ProjectIconId>(props.project?.icon ?? 'folder')
   const [color, setColor] = useState(props.project?.color ?? projectColors[props.projectIndex % projectColors.length])
   const title = props.mode === 'create' ? props.translate('createProject') : props.translate('editProject')
+  const dialogRef = useFocusTrap<HTMLElement>()
 
   function onSubmit(event: React.FormEvent<HTMLFormElement>): void {
     event.preventDefault()
@@ -3253,7 +3331,7 @@ function ProjectDialog(props: {
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="settings-modal picker-modal" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title">
+      <section ref={dialogRef} className="settings-modal picker-modal" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title" tabIndex={-1}>
         <header className="settings-header">
           <div>
             <h2 id="project-dialog-title">{title}</h2>
@@ -3312,6 +3390,7 @@ function SpaceDialog(props: {
   const [members, setMembers] = useState<SpaceMember[]>(props.space?.members ?? [createOwnerMember()])
   const [inviteEmail, setInviteEmail] = useState('')
   const title = props.mode === 'create' ? props.translate('createSpace') : props.translate('editSpace')
+  const dialogRef = useFocusTrap<HTMLElement>()
 
   function onSubmit(event: React.FormEvent<HTMLFormElement>): void {
     event.preventDefault()
@@ -3328,7 +3407,7 @@ function SpaceDialog(props: {
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="settings-modal picker-modal" role="dialog" aria-modal="true" aria-labelledby="space-dialog-title">
+      <section ref={dialogRef} className="settings-modal picker-modal" role="dialog" aria-modal="true" aria-labelledby="space-dialog-title" tabIndex={-1}>
         <header className="settings-header">
           <div>
             <h2 id="space-dialog-title">{title}</h2>
@@ -3448,6 +3527,8 @@ function ColorPicker(props: { value: string; onChange: (color: string) => void }
   )
 }
 
+type SettingsTabId = 'providers' | 'models' | 'mcp' | 'privacy' | 'notifications' | 'appearance' | 'usage'
+
 function ProviderSettingsModal(props: {
   providers: CustomProviderSummary[]
   themeMode: ThemeMode
@@ -3470,6 +3551,7 @@ function ProviderSettingsModal(props: {
   onDeleteMcpServer: (serverId: string) => void
   onSaved: (provider: CustomProviderSummary) => void
 }): JSX.Element {
+  const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTabId>('providers')
   const [selectedProviderId, setSelectedProviderId] = useState(props.providers.find((provider) => provider.configured)?.id ?? 'openai')
   const selectedProvider =
     props.providers.find((provider) => provider.id === selectedProviderId) ??
@@ -3493,6 +3575,7 @@ function ProviderSettingsModal(props: {
     command: '',
     envText: ''
   })
+  const dialogRef = useFocusTrap<HTMLElement>()
 
   useEffect(() => {
     const provider = props.providers.find((candidate) => candidate.id === selectedProviderId)
@@ -3565,9 +3648,43 @@ function ProviderSettingsModal(props: {
     })
   }
 
+  const settingsTabs: Array<{ id: SettingsTabId; label: string }> = [
+    { id: 'providers', label: props.translate('settingsTabProviders') },
+    { id: 'models', label: props.translate('settingsTabModels') },
+    { id: 'mcp', label: props.translate('settingsTabMcp') },
+    { id: 'privacy', label: props.translate('settingsTabPrivacy') },
+    { id: 'notifications', label: props.translate('settingsTabNotifications') },
+    { id: 'appearance', label: props.translate('settingsTabAppearance') },
+    { id: 'usage', label: props.translate('settingsTabUsage') }
+  ]
+
+  function focusSettingsTab(tabId: SettingsTabId): void {
+    setActiveSettingsTab(tabId)
+    requestAnimationFrame(() => document.getElementById(`settings-tab-${tabId}`)?.focus())
+  }
+
+  function handleSettingsTabKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, tabId: SettingsTabId): void {
+    const currentIndex = settingsTabs.findIndex((tab) => tab.id === tabId)
+    if (currentIndex === -1) return
+
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      event.preventDefault()
+      focusSettingsTab(settingsTabs[(currentIndex + 1) % settingsTabs.length].id)
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      focusSettingsTab(settingsTabs[(currentIndex - 1 + settingsTabs.length) % settingsTabs.length].id)
+    } else if (event.key === 'Home') {
+      event.preventDefault()
+      focusSettingsTab(settingsTabs[0].id)
+    } else if (event.key === 'End') {
+      event.preventDefault()
+      focusSettingsTab(settingsTabs[settingsTabs.length - 1].id)
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <section ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1}>
         <header className="settings-header">
           <div>
             <h2 id="settings-title">{props.translate('settings')}</h2>
@@ -3578,21 +3695,34 @@ function ProviderSettingsModal(props: {
           </button>
         </header>
 
-        <section className="settings-section" aria-labelledby="appearance-settings-title">
+        <div className="settings-tabs" role="tablist" aria-label={props.translate('settings')}>
+          {settingsTabs.map((tab) => (
+            <button
+              id={`settings-tab-${tab.id}`}
+              key={tab.id}
+              className={activeSettingsTab === tab.id ? 'active' : ''}
+              type="button"
+              role="tab"
+              aria-controls={`settings-panel-${tab.id}`}
+              aria-selected={activeSettingsTab === tab.id}
+              tabIndex={activeSettingsTab === tab.id ? 0 : -1}
+              onClick={() => setActiveSettingsTab(tab.id)}
+              onKeyDown={(event) => handleSettingsTabKeyDown(event, tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <section className="settings-section" id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance" hidden={activeSettingsTab !== 'appearance'}>
           <div>
             <strong id="appearance-settings-title">{props.translate('appearance')}</strong>
             <p>{props.translate('appearanceHelp')}</p>
           </div>
           <div className="settings-inline-controls">
-            <div className="theme-segmented" role="group" aria-label={props.translate('theme')}>
-              <button className={props.themeMode === 'light' ? 'active' : ''} type="button" aria-pressed={props.themeMode === 'light'} onClick={() => props.onThemeChange('light')}>
-                <Sun size={15} />
-                {props.translate('light')}
-              </button>
-              <button className={props.themeMode === 'dark' ? 'active' : ''} type="button" aria-pressed={props.themeMode === 'dark'} onClick={() => props.onThemeChange('dark')}>
-                <Moon size={15} />
-                {props.translate('dark')}
-              </button>
+            <div className="settings-static-chip">
+              <Moon size={15} />
+              {props.translate('dark')}
             </div>
             <div className="theme-segmented language-segmented" role="group" aria-label={props.translate('language')}>
               {locales.map((item) => (
@@ -3610,7 +3740,7 @@ function ProviderSettingsModal(props: {
           </div>
         </section>
 
-        <section className="settings-section" aria-labelledby="notification-settings-title">
+        <section className="settings-section" id="settings-panel-notifications" role="tabpanel" aria-labelledby="settings-tab-notifications" hidden={activeSettingsTab !== 'notifications'}>
           <div>
             <strong id="notification-settings-title">{props.translate('notifications')}</strong>
             <p>{props.translate('notificationsHelp')}</p>
@@ -3625,7 +3755,7 @@ function ProviderSettingsModal(props: {
           </button>
         </section>
 
-        <section className="settings-section" aria-labelledby="router-settings-title">
+        <section className="settings-section" id="settings-panel-models" role="tabpanel" aria-labelledby="settings-tab-models" hidden={activeSettingsTab !== 'models'}>
           <div>
             <strong id="router-settings-title">{props.translate('modelRouter')}</strong>
             <p>{props.translate('routerHelp')}</p>
@@ -3645,7 +3775,7 @@ function ProviderSettingsModal(props: {
           </div>
         </section>
 
-        <section className="settings-section" aria-labelledby="privacy-settings-title">
+        <section className="settings-section" id="settings-panel-privacy" role="tabpanel" aria-labelledby="settings-tab-privacy" hidden={activeSettingsTab !== 'privacy'}>
           <div>
             <strong id="privacy-settings-title">{props.translate('privacyMode')}</strong>
             <p>{props.translate('privacyHelp')}</p>
@@ -3659,9 +3789,26 @@ function ProviderSettingsModal(props: {
             <Shield size={14} />
             {props.privacySettings.localOnly ? props.translate('enabled') : props.translate('disabled')}
           </button>
+          <div>
+            <strong>{props.translate('setupRemoteConsent')}</strong>
+            <p>{props.translate('setupRemoteConsentHelp')}</p>
+          </div>
+          <button
+            className={`mini-toggle ${props.privacySettings.allowRemoteSetupAgent ? 'active' : ''}`}
+            type="button"
+            aria-pressed={props.privacySettings.allowRemoteSetupAgent}
+            onClick={() =>
+              props.onPrivacyChange({
+                ...props.privacySettings,
+                allowRemoteSetupAgent: !props.privacySettings.allowRemoteSetupAgent
+              })
+            }
+          >
+            {props.privacySettings.allowRemoteSetupAgent ? props.translate('enabled') : props.translate('disabled')}
+          </button>
         </section>
 
-        <section className="settings-section" aria-labelledby="usage-settings-title">
+        <section className="settings-section" id="settings-panel-usage" role="tabpanel" aria-labelledby="settings-tab-usage" hidden={activeSettingsTab !== 'usage'}>
           <div>
             <strong id="usage-settings-title">{props.translate('usage')}</strong>
             <p>{props.usageSummary.totalRequests} requests · {props.usageSummary.inputTokensEstimate + props.usageSummary.outputTokensEstimate} estimated tokens.</p>
@@ -3669,6 +3816,7 @@ function ProviderSettingsModal(props: {
           <BarChart3 size={18} />
         </section>
 
+        <div className="settings-tab-panel" id="settings-panel-providers" hidden={activeSettingsTab !== 'providers'} role="tabpanel" aria-labelledby="settings-tab-providers">
         <div className="settings-subheader">
           <strong>{props.translate('providerSettings')}</strong>
           <p>{props.translate('providerModelHelp')}</p>
@@ -3734,7 +3882,9 @@ function ProviderSettingsModal(props: {
             )}
           </div>
         </div>
+        </div>
 
+        <div className="settings-tab-panel" id="settings-panel-mcp" hidden={activeSettingsTab !== 'mcp'} role="tabpanel" aria-labelledby="settings-tab-mcp">
         <div className="settings-subheader">
           <strong>{props.translate('mcpMarketplace')}</strong>
           <p>{props.translate('mcpServersHelp')}</p>
@@ -3816,6 +3966,7 @@ function ProviderSettingsModal(props: {
             </button>
           </div>
         </div>
+        </div>
       </section>
     </div>
   )
@@ -3829,7 +3980,9 @@ function SetupAgentModal(props: {
 }): JSX.Element {
   const [value, setValue] = useState('')
   const [sending, setSending] = useState(false)
+  const [pendingSetup, setPendingSetup] = useState<{ input: string; plan: ReturnType<typeof createSetupAgentPlan> } | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
+  const dialogRef = useFocusTrap<HTMLElement>()
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -3838,6 +3991,13 @@ function SetupAgentModal(props: {
   async function submit(): Promise<void> {
     const trimmedValue = value.trim()
     if (!trimmedValue || sending) return
+    const plan = createSetupAgentPlan(trimmedValue)
+    if (plan.hasActions) {
+      setPendingSetup({ input: trimmedValue, plan })
+      setValue('')
+      return
+    }
+
     setSending(true)
     setValue('')
     try {
@@ -3847,9 +4007,21 @@ function SetupAgentModal(props: {
     }
   }
 
+  async function confirmPendingSetup(): Promise<void> {
+    if (!pendingSetup || sending) return
+    setSending(true)
+    try {
+      const input = pendingSetup.input
+      setPendingSetup(null)
+      await props.onSend(input)
+    } finally {
+      setSending(false)
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="settings-modal setup-agent-modal" role="dialog" aria-modal="true" aria-labelledby="setup-agent-title">
+      <section ref={dialogRef} className="settings-modal setup-agent-modal" role="dialog" aria-modal="true" aria-labelledby="setup-agent-title" tabIndex={-1}>
         <header className="settings-header">
           <div>
             <h2 id="setup-agent-title">{props.translate('setupAgent')}</h2>
@@ -3874,6 +4046,31 @@ function SetupAgentModal(props: {
           {sending ? <article className="setup-agent-message assistant">...</article> : null}
           <div ref={bottomRef} />
         </div>
+
+        {pendingSetup ? (
+          <div className="setup-agent-preview">
+            <div>
+              <strong>{props.translate('setupPlanPreview')}</strong>
+              <p>{props.translate('setupPlanPreviewHelp')}</p>
+            </div>
+            <ul>
+              {pendingSetup.plan.actions.map((action) => (
+                <li key={`${action.type}-${action.label}`}>{action.label}</li>
+              ))}
+            </ul>
+            {pendingSetup.plan.remoteSetupText ? (
+              <pre>{pendingSetup.plan.remoteSetupText}</pre>
+            ) : null}
+            <div className="inline-actions">
+              <button className="secondary-button" type="button" disabled={sending} onClick={() => setPendingSetup(null)}>
+                {props.translate('cancel')}
+              </button>
+              <button className="primary-button" type="button" disabled={sending} onClick={() => void confirmPendingSetup()}>
+                {props.translate('apply')}
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         <div className="setup-agent-composer">
           <textarea
@@ -3912,6 +4109,7 @@ function SkillsModal(props: {
   const [promptContent, setPromptContent] = useState('')
   const [promptQuery, setPromptQuery] = useState('')
   const filteredPrompts = filterPromptTemplates(props.prompts, promptQuery)
+  const dialogRef = useFocusTrap<HTMLElement>()
 
   function installFromUrl(): void {
     const url = draft.url.trim()
@@ -3947,7 +4145,7 @@ function SkillsModal(props: {
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="settings-modal skills-modal" role="dialog" aria-modal="true" aria-labelledby="skills-title">
+      <section ref={dialogRef} className="settings-modal skills-modal" role="dialog" aria-modal="true" aria-labelledby="skills-title" tabIndex={-1}>
         <header className="settings-header">
           <div>
             <h2 id="skills-title">{props.translate('skills')}</h2>
@@ -4576,18 +4774,78 @@ function useCloseOnOutsideClick<T extends HTMLElement>(
   return ref
 }
 
-function usePersistentState<T>(key: string, initialValue: T): [T, React.Dispatch<React.SetStateAction<T>>] {
+function useFocusTrap<T extends HTMLElement>(enabled = true): React.RefObject<T> {
+  const ref = useRef<T | null>(null)
+
+  useEffect(() => {
+    if (!enabled) return
+    const element = ref.current
+    if (!element) return
+    const trappedElement = element
+
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const focusableSelector = [
+      'button:not([disabled])',
+      'input:not([disabled])',
+      'textarea:not([disabled])',
+      'select:not([disabled])',
+      'a[href]',
+      '[tabindex]:not([tabindex="-1"])'
+    ].join(',')
+    const getFocusable = (): HTMLElement[] =>
+      Array.from(trappedElement.querySelectorAll<HTMLElement>(focusableSelector)).filter(
+        (candidate) => candidate.offsetParent !== null
+      )
+
+    ;(getFocusable()[0] ?? trappedElement).focus({ preventScroll: true })
+
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key !== 'Tab') return
+      const focusable = getFocusable()
+      if (focusable.length === 0) {
+        event.preventDefault()
+        trappedElement.focus({ preventScroll: true })
+        return
+      }
+
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      previousFocus?.focus({ preventScroll: true })
+    }
+  }, [enabled])
+
+  return ref
+}
+
+function usePersistentState<T>(
+  key: string,
+  initialValue: T,
+  normalize?: (value: unknown, fallbackValue: T) => T
+): [T, React.Dispatch<React.SetStateAction<T>>] {
   const [value, setValue] = useState<T>(() => {
     try {
       const storedValue = localStorage.getItem(key)
-      return storedValue ? (JSON.parse(storedValue) as T) : initialValue
+      const parsedValue = safeParsePersistentValue<unknown>(storedValue, initialValue)
+      return normalize ? normalize(parsedValue, initialValue) : (parsedValue as T)
     } catch {
       return initialValue
     }
   })
 
   useEffect(() => {
-    localStorage.setItem(key, JSON.stringify(value))
+    localStorage.setItem(key, JSON.stringify(createPersistentStateEnvelope(value)))
   }, [key, value])
 
   return [value, setValue]
