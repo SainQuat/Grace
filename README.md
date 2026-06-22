@@ -49,3 +49,4 @@ GRACE_PROVIDER_BASE_URL=https://api.example.com/v1 GRACE_PROVIDER_API_KEY=... np
 
 See [docs/delivery.md](docs/delivery.md) and [docs/architecture.md](docs/architecture.md).
 See [docs/prd-v0.1.md](docs/prd-v0.1.md) for the first product scope.
+See [DESIGN.md](DESIGN.md) for the strict Conductor-like design brief.
