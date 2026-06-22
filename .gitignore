@@ -5,6 +5,7 @@
 
 # Conductor collaboration scratchpad
 .context/
+.omx/
 
 # Dependencies and build output
 node_modules/
