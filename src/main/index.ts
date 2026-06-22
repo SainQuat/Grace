@@ -32,7 +32,7 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 680,
     title: 'Grace',
-    backgroundColor: '#11100f',
+    backgroundColor: '#0e0d0b',
     show: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     trafficLightPosition: process.platform === 'darwin' ? { x: 16, y: 18 } : undefined,

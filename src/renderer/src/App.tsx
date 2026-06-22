@@ -15,7 +15,6 @@ import {
   Image,
   Mail,
   Menu,
-  Mic,
   Moon,
   MoreHorizontal,
   PanelRight,
@@ -43,7 +42,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { providerPresets } from '../../shared/providerPresets'
 import type { ChatMessagePayload, ChatStreamEvent, CustomProviderSummary, ProviderModel, SkillSummary } from '../../shared/types'
-import { locales, translate, type Locale, type Translate } from './i18n'
+import { locales, translate, type Locale, type Translate, type TranslationKey } from './i18n'
 import { createSetupAgentPlan } from './setupAgent'
 import {
   createDraftTitle,
@@ -190,11 +189,11 @@ const projectIconOptions: Array<{ id: ProjectIconId; label: string; icon: typeof
   { id: 'archive', label: 'Archive', icon: Archive }
 ]
 
-const projectColors = ['#5cc8b7', '#8b5cf6', '#f59e0b', '#ef4444', '#3b82f6', '#22c55e', '#f97316', '#ec4899']
+const projectColors = ['#f97316', '#d97706', '#92400e', '#78716c', '#57534e', '#44403c', '#ef4444', '#22c55e']
 
 const initialProjects: Project[] = [
-  { id: 'project-grace', name: 'Grace', icon: 'bot', color: '#5cc8b7' },
-  { id: 'project-writing', name: 'Writing', icon: 'book', color: '#8b5cf6' }
+  { id: 'project-grace', name: 'Grace', icon: 'bot', color: '#f97316' },
+  { id: 'project-writing', name: 'Writing', icon: 'book', color: '#78716c' }
 ]
 
 const initialSpaces: Space[] = [
@@ -202,7 +201,7 @@ const initialSpaces: Space[] = [
     id: 'space-grace-team',
     name: 'Grace Team',
     icon: 'bot',
-    color: '#3b82f6',
+    color: '#d97706',
     createdAt: new Date(Date.now() - 1000 * 60 * 60 * 12).toISOString(),
     members: [
       {
@@ -225,11 +224,7 @@ const initialSpaces: Space[] = [
 
 const tools: ToolOption[] = [
   { id: 'attach', label: 'Attach file', description: 'Add docs, images, or notes', icon: Paperclip },
-  { id: 'web', label: 'Search web', description: 'Use fresh sources', icon: Search },
-  { id: 'image', label: 'Create image', description: 'Draft a visual prompt', icon: Image },
-  { id: 'canvas', label: 'Open canvas', description: 'Work in a side document', icon: PanelRight },
-  { id: 'voice', label: 'Voice', description: 'Dictate or read aloud', icon: Mic },
-  { id: 'apps', label: 'Connect app', description: 'Prepare an integration', icon: Zap }
+  { id: 'canvas', label: 'Open canvas', description: 'Work in a side document', icon: PanelRight }
 ]
 
 const builtInModels: ModelOption[] = [
@@ -285,12 +280,12 @@ const builtInModels: ModelOption[] = [
   }
 ]
 
-const promptSuggestions = [
-  'Draft a launch checklist for v0.1',
-  'Rewrite this note in a clearer style',
-  'Explain this code path step by step',
-  'Plan a desktop app release',
-  'Summarize a file I attach'
+const promptSuggestions: TranslationKey[] = [
+  'promptReleaseChecklist',
+  'promptRewriteNote',
+  'promptExplainCode',
+  'promptPlanRelease',
+  'promptSummarizeFile'
 ]
 
 const presetSkills: SkillSummary[] = [
@@ -2094,10 +2089,6 @@ function TopBar(props: {
         </div>
       </div>
       <div className="topbar-actions">
-        <button className="text-button" type="button">
-          <ShareIcon />
-          {props.translate('share')}
-        </button>
         <button className="icon-button" type="button" aria-label={themeLabel} title={themeLabel} onClick={props.onToggleTheme}>
           {props.themeMode === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
         </button>
@@ -2131,16 +2122,21 @@ function ChatThread(props: {
 
   if (props.chat.messages.length === 0) {
     return (
-      <section className="chat-thread empty-state" aria-label="Empty chat">
+      <section className="chat-thread empty-state" aria-label={props.translate('newChat')}>
         <div className="empty-content">
-          <div className="mark" aria-hidden="true">
-            <Bot size={28} />
-          </div>
-          <h1>{props.translate('howCanHelp')}</h1>
-          <div className="suggestion-grid">
-            {promptSuggestions.map((suggestion) => (
-              <button key={suggestion} className="suggestion-card" type="button" onClick={() => props.onPromptClick(suggestion)}>
-                {suggestion}
+          <div className="empty-kicker">{props.translate('newChat')}</div>
+          <h2>{props.translate('emptyChatTitle')}</h2>
+          <p>{props.translate('emptyChatHint')}</p>
+          <div className="suggestion-grid" aria-label={props.translate('emptyChatSuggestions')}>
+            {promptSuggestions.map((suggestionKey) => (
+              <button
+                key={suggestionKey}
+                className="suggestion-command"
+                type="button"
+                onClick={() => props.onPromptClick(props.translate(suggestionKey))}
+              >
+                <span aria-hidden="true">/</span>
+                {props.translate(suggestionKey)}
               </button>
             ))}
           </div>
@@ -2386,9 +2382,6 @@ function Composer(props: {
             </button>
           </div>
           <div className="composer-right">
-            <button className="icon-button" type="button" aria-label={props.translate('voice')} title={props.translate('voice')}>
-              <Mic size={18} />
-            </button>
             {props.isStreaming ? (
               <button className="send-button" type="button" aria-label={props.translate('stop')} title={props.translate('stop')} onClick={props.onStop}>
                 <Square size={16} />
@@ -3547,10 +3540,6 @@ function CodeWorkspacePanel(props: {
       )}
     </div>
   )
-}
-
-function ShareIcon(): JSX.Element {
-  return <Copy size={15} />
 }
 
 function useCloseOnOutsideClick<T extends HTMLElement>(
