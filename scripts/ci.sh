@@ -27,6 +27,7 @@ run_node_checks() {
     run_node_script_if_present pnpm lint
     run_node_script_if_present pnpm test
     run_node_script_if_present pnpm build
+    run_node_script_if_present pnpm build:web
     return
   fi
 
@@ -36,6 +37,7 @@ run_node_checks() {
     run_node_script_if_present yarn lint
     run_node_script_if_present yarn test
     run_node_script_if_present yarn build
+    run_node_script_if_present yarn build:web
     return
   fi
 
@@ -48,6 +50,7 @@ run_node_checks() {
   run_node_script_if_present npm lint
   run_node_script_if_present npm test
   run_node_script_if_present npm build
+  run_node_script_if_present npm build:web
 }
 
 run_python_checks() {

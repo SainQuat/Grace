@@ -13,11 +13,13 @@ Grace is a local-first desktop AI chat app.
 ## v0.1 stack
 
 - Desktop shell: Electron.
-- Renderer: React, TypeScript, Vite.
+- Renderer/site UI: React, TypeScript, Vite.
 - Main process: provider/runtime boundary and streaming IPC.
 - Preload: narrow `window.graceAI` API.
+- Browser site: uses the same renderer through a `graceApi` adapter and an optional BYOK local provider setup.
 - Storage: renderer local storage for v0.1 chat state.
 - Custom provider credentials: stored by the Electron main process with `safeStorage`; API keys are not returned to the renderer.
+- Browser site credentials: stored locally in the browser for user-provided provider keys; production hosted deployments should move secrets behind a server route.
 - Styling: plain CSS with design tokens.
 - Testing: Vitest for focused logic tests, TypeScript build for compile checks.
 - Packaging: `electron-builder` produces unsigned macOS `.dmg` installers with the app icon from `resources/icon.icns`.
@@ -26,9 +28,10 @@ Grace is a local-first desktop AI chat app.
 
 The default target is an AI application with these boundaries:
 
-- Renderer: chat UI, local UI state, keyboard interactions, and responsive layout.
+- Renderer: chat UI, local UI state, keyboard interactions, responsive layout, and Russian localized dark theme.
 - Main process: model calls, desktop APIs, file access, and background work.
 - Preload: typed IPC bridge with no direct Node access in the renderer.
+- Web adapter: browser fallback for provider settings, model discovery, chat streaming, and demo streaming when Electron IPC is absent.
 - Provider adapters: OpenAI, Anthropic, DeepSeek, OpenRouter, and local endpoints later.
 - Custom OpenAI-compatible provider: base URL + API key, `/models` discovery, `/chat/completions` streaming.
 - Data layer: SQLite or equivalent local database after v0.1.

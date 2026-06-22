@@ -10,9 +10,12 @@
     "postinstall": "node node_modules/electron/install.js",
     "ensure:electron": "node node_modules/electron/install.js",
     "dev": "npm run ensure:electron && electron-vite dev",
+    "dev:web": "vite --config vite.web.config.ts",
     "build": "tsc --noEmit && electron-vite build",
+    "build:web": "tsc --noEmit && vite build --config vite.web.config.ts",
     "dist:mac": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg --arm64 --x64 --publish never",
     "preview": "npm run ensure:electron && electron-vite preview",
+    "preview:web": "vite preview --config vite.web.config.ts",
     "smoke:provider": "node scripts/smoke-provider.mjs",
     "test": "vitest run"
   },

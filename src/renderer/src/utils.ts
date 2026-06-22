@@ -6,7 +6,7 @@ export function formatBytes(bytes: number): string {
 
 export function createDraftTitle(input: string): string {
   const normalized = input.replace(/\s+/g, ' ').trim()
-  if (!normalized) return 'New chat'
+  if (!normalized) return 'Новый чат'
   return normalized.length > 42 ? `${normalized.slice(0, 39)}...` : normalized
 }
 

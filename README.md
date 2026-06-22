@@ -10,6 +10,7 @@ Stack:
 
 - Electron desktop shell
 - React + TypeScript + Vite renderer
+- Optional web build target for running the chat UI as a browser site
 - Safe preload IPC bridge for chat streaming
 - Local browser storage for v0.1 chat state
 
@@ -26,10 +27,13 @@ Direct app commands:
 
 ```sh
 npm run dev
+npm run dev:web
 npm run test
 npm run build
+npm run build:web
 npm run dist:mac
 npm run preview
+npm run preview:web
 npm run smoke:provider
 ```
 
