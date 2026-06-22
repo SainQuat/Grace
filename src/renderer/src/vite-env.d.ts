@@ -1,22 +1,10 @@
 /// <reference types="vite/client" />
 
-import type {
-  ChatRequestPayload,
-  ChatStreamEvent,
-  CustomProviderSummary,
-  SaveCustomProviderPayload
-} from '../../shared/types'
+import type { GraceApi } from './graceApi'
 
 declare global {
   interface Window {
-    graceAI: {
-      startChat(payload: ChatRequestPayload): void
-      stopChat(requestId: string): void
-      onChatEvent(callback: (event: ChatStreamEvent) => void): () => void
-      getCustomProvider(): Promise<CustomProviderSummary>
-      saveCustomProvider(payload: SaveCustomProviderPayload): Promise<CustomProviderSummary>
-      refreshCustomProviderModels(): Promise<CustomProviderSummary>
-    }
+    graceAI?: GraceApi
   }
 }
 

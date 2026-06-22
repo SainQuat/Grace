@@ -12,5 +12,6 @@ describe('createDraftTitle', () => {
   it('normalizes and truncates chat titles', () => {
     expect(createDraftTitle('   hello    world   ')).toBe('hello world')
     expect(createDraftTitle('a'.repeat(80))).toBe(`${'a'.repeat(39)}...`)
+    expect(createDraftTitle('   ')).toBe('Новый чат')
   })
 })

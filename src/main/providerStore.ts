@@ -30,7 +30,7 @@ export async function saveCustomProvider(args: {
   selectedModelId?: string
 }): Promise<CustomProviderSummary> {
   if (!safeStorage.isEncryptionAvailable()) {
-    throw new Error('Secure credential storage is not available on this machine.')
+    throw new Error('Защищенное хранилище ключей недоступно на этой машине.')
   }
 
   const provider: StoredProvider = {
@@ -65,7 +65,7 @@ export async function updateCustomProviderModels(models: ProviderModel[]): Promi
   const storedProvider = await readStoredProvider()
 
   if (!storedProvider) {
-    throw new Error('Custom provider is not configured.')
+    throw new Error('Свой провайдер не настроен.')
   }
 
   return saveCustomProvider({

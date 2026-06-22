@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'node:path'
+import { createDemoStream } from '../shared/demoStream'
 import type { ChatRequestPayload, SaveCustomProviderPayload } from '../shared/types'
 import { fetchProviderModels, normalizeBaseUrl, streamProviderChat } from './providerClient'
 import {
@@ -20,7 +21,7 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 680,
     title: 'Grace',
-    backgroundColor: '#ffffff',
+    backgroundColor: '#0b0f17',
     show: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
@@ -50,7 +51,7 @@ app.whenReady().then(() => {
       event.sender.send('chat:event', {
         type: 'error',
         requestId: requestId || 'unknown',
-        message: 'Invalid chat request.'
+        message: 'Некорректный запрос чата.'
       })
       return
     }
@@ -82,7 +83,7 @@ app.whenReady().then(() => {
         event.sender.send('chat:event', {
           type: 'error',
           requestId,
-          message: error instanceof Error ? error.message : 'Unknown generation error.'
+          message: error instanceof Error ? error.message : 'Неизвестная ошибка генерации.'
         })
       }
     } finally {
@@ -115,7 +116,7 @@ app.whenReady().then(() => {
   ipcMain.handle('provider:refresh-custom-models', async () => {
     const secret = await getCustomProviderSecret()
     if (!secret) {
-      throw new Error('Custom provider is not configured.')
+      throw new Error('Свой провайдер не настроен.')
     }
 
     const models = await fetchProviderModels(secret.baseUrl, secret.apiKey)
@@ -142,7 +143,7 @@ async function* createStream(
 
   const secret = await getCustomProviderSecret()
   if (!secret) {
-    throw new Error('Custom provider is not configured.')
+    throw new Error('Свой провайдер не настроен.')
   }
 
   requestState.abortController = new AbortController()
@@ -154,46 +155,6 @@ app.on('window-all-closed', () => {
     app.quit()
   }
 })
-
-async function* createDemoStream(payload: ChatRequestPayload): AsyncGenerator<string> {
-  const latestUserMessage = [...payload.messages].reverse().find((message) => message.role === 'user')
-  const prompt = latestUserMessage?.content.trim() || 'new conversation'
-  const selectedTools = payload.tools.length > 0 ? payload.tools.join(', ') : 'no tools'
-  const attachedFiles =
-    payload.files.length > 0 ? payload.files.map((file) => file.name).join(', ') : 'no attached files'
-
-  const response = [
-    `I can help with "${prompt}". `,
-    `For this demo response I am using ${payload.modelId} with ${payload.effort} reasoning effort. `,
-    `Selected tools: ${selectedTools}. Attached files: ${attachedFiles}.`,
-    '\n\nHere is a practical first pass:\n\n',
-    '1. Clarify the output you need.\n',
-    '2. Draft the smallest useful version.\n',
-    '3. Iterate with concrete examples or files.\n\n',
-    '```ts\n',
-    'type NextStep = "draft" | "review" | "ship"\n',
-    'const nextStep: NextStep = "draft"\n',
-    '```\n\n',
-    'When provider keys are connected, this stream will come from the selected model through the Electron main process.'
-  ].join('')
-
-  for (const chunk of splitIntoChunks(response, 18)) {
-    await delay(42)
-    yield chunk
-  }
-}
-
-function splitIntoChunks(value: string, size: number): string[] {
-  const chunks: string[] = []
-  for (let index = 0; index < value.length; index += size) {
-    chunks.push(value.slice(index, index + size))
-  }
-  return chunks
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError'
